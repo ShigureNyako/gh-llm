@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from urllib.parse import urlparse
 
-from gh_llm.models import PageInfo, PullRequestMeta, PullRequestRef, TimelineEvent, TimelinePage
+from gh_llm.models import CheckItem, PageInfo, PullRequestMeta, PullRequestRef, TimelineEvent, TimelinePage
 
 MAX_INLINE_TEXT = 8000
 MAX_INLINE_LINES = 200
@@ -235,6 +235,41 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
               author{login ... on User{name}}
               reactionGroups{content users{totalCount}}
               pullRequestReview{id}
+            }
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+CHECKS_QUERY = """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      commits(last:1){
+        nodes{
+          commit{
+            statusCheckRollup{
+              contexts(first:100){
+                nodes{
+                  __typename
+                  ... on CheckRun{
+                    name
+                    status
+                    conclusion
+                    detailsUrl
+                    databaseId
+                  }
+                  ... on StatusContext{
+                    context
+                    state
+                    targetUrl
+                    description
+                  }
+                }
+              }
             }
           }
         }
@@ -507,6 +542,65 @@ mutation($id:ID!,$body:String!){
         payload = _run_command_json(["gh", "api", "user"])
         login = _as_optional_str(payload.get("login"))
         return login or ""
+
+    def fetch_checks(self, ref: PullRequestRef) -> list[CheckItem]:
+        payload = _run_graphql_payload(
+            CHECKS_QUERY,
+            {"owner": ref.owner, "name": ref.name, "number": ref.number},
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        pr_obj = _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+        commits_obj = _as_dict(pr_obj.get("commits"), context="commits")
+        nodes = _as_list(commits_obj.get("nodes"))
+        if not nodes:
+            return []
+        head = _as_dict(nodes[0], context="commit node")
+        commit_obj = _as_dict(head.get("commit"), context="commit")
+        rollup_obj = _as_dict_optional(commit_obj.get("statusCheckRollup"))
+        if rollup_obj is None:
+            return []
+        contexts_obj = _as_dict_optional(rollup_obj.get("contexts"))
+        if contexts_obj is None:
+            return []
+
+        items: list[CheckItem] = []
+        for raw in _as_list(contexts_obj.get("nodes")):
+            node = _as_dict(raw, context="check context")
+            typename = _as_optional_str(node.get("__typename")) or ""
+            if typename == "CheckRun":
+                name = (_as_optional_str(node.get("name")) or "").strip() or "(unnamed check run)"
+                status = _as_optional_str(node.get("status")) or "UNKNOWN"
+                conclusion = _as_optional_str(node.get("conclusion"))
+                label = f"{status}/{(conclusion or 'NONE')}"
+                details_url = _as_optional_str(node.get("detailsUrl"))
+                run_id, job_id = _extract_actions_run_and_job_ids(details_url)
+                items.append(
+                    CheckItem(
+                        name=name,
+                        kind="check-run",
+                        status=label,
+                        passed=_is_check_run_passed(status=status, conclusion=conclusion),
+                        details_url=details_url,
+                        run_id=run_id,
+                        job_id=job_id,
+                    )
+                )
+                continue
+            if typename == "StatusContext":
+                name = (_as_optional_str(node.get("context")) or "").strip() or "(unnamed status)"
+                state = _as_optional_str(node.get("state")) or "UNKNOWN"
+                items.append(
+                    CheckItem(
+                        name=name,
+                        kind="status-context",
+                        status=state,
+                        passed=(state == "SUCCESS"),
+                        details_url=_as_optional_str(node.get("targetUrl")),
+                        run_id=None,
+                    )
+                )
+        return items
 
 def _run_graphql_connection(query: str, variables: dict[str, str | int]) -> dict[str, object]:
     payload = _run_graphql_payload(query, variables)
@@ -931,7 +1025,7 @@ def _render_review_thread_block(
                 viewer_login=viewer_login,
             )
         )
-    lines.append(f"  🆔 thread_id: {thread_id}")
+    lines.append(f"  ◌ thread_id: {thread_id}")
     lines.append("  ⌨ reply_body: '<reply>'")
     lines.append(
         f"  ⏎ Reply via gh-llm: `gh-llm pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
@@ -981,7 +1075,7 @@ def _render_review_comment_block(
         lines.append(f"  Reactions: {reactions_summary}")
     comment_id = _as_optional_str(comment.get("id")) or ""
     if comment_id and author == viewer_login:
-        lines.append(f"  🆔 comment_id: {comment_id}")
+        lines.append(f"  ◌ comment_id: {comment_id}")
         lines.append("  ⌨ comment_body: '<comment_body>'")
         lines.append(
             f"  ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {comment_id} --body '<comment_body>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
@@ -1152,6 +1246,36 @@ def _is_retryable_gh_error(stderr: str) -> bool:
         "temporary failure",
     )
     return any(pattern in lowered for pattern in retryable_patterns)
+
+
+def _is_check_run_passed(*, status: str, conclusion: str | None) -> bool:
+    if status != "COMPLETED":
+        return False
+    return (conclusion or "").upper() in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+
+
+def _extract_actions_run_and_job_ids(details_url: str | None) -> tuple[int | None, int | None]:
+    if not details_url:
+        return None, None
+    parsed = urlparse(details_url)
+    parts = [segment for segment in parsed.path.split("/") if segment]
+    # Expected shape: /<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+    run_id: int | None = None
+    job_id: int | None = None
+    for idx, part in enumerate(parts):
+        if part == "runs" and idx + 1 < len(parts):
+            run_id = _parse_positive_int(parts[idx + 1])
+        if part == "job" and idx + 1 < len(parts):
+            job_id = _parse_positive_int(parts[idx + 1])
+    return run_id, job_id
+
+
+def _parse_positive_int(raw: str) -> int | None:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _reference_subject_summary(source: dict[str, object] | None) -> ReferenceSubject | None:

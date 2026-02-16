@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from string.templatelib import Template
 
-    from gh_llm.models import TimelineContext, TimelineEvent, TimelinePage
+    from gh_llm.models import CheckItem, TimelineContext, TimelineEvent, TimelinePage
 
 
 def render_header(context: TimelineContext) -> list[str]:
@@ -89,6 +89,65 @@ def render_pr_actions(context: TimelineContext) -> list[str]:
     ]
 
 
+def render_checks_section(
+    *,
+    context: TimelineContext,
+    checks: list[CheckItem],
+    show_all: bool,
+    is_open: bool,
+) -> list[str]:
+    repo = f"{context.owner}/{context.name}"
+    if not is_open:
+        return [
+            "## Checks",
+            f"Closed PR: checks are hidden by default. ⏎ run `gh-llm pr checks --pr {context.number} --repo {repo} --all`",
+            "",
+        ]
+
+    visible = checks if show_all else [item for item in checks if not item.passed]
+    hidden_count = max(0, len(checks) - len(visible))
+    lines = ["## Checks"]
+    if not visible:
+        if checks:
+            lines.append("All checks passed.")
+        else:
+            lines.append("(no checks found)")
+    else:
+        for idx, item in enumerate(visible, start=1):
+            lines.append(f"{idx}. [{item.status}] {item.name} ({item.kind})")
+            if item.run_id is not None:
+                if item.job_id is not None:
+                    lines.append(
+                        f"   ⏎ details: `gh run view {item.run_id} --job {item.job_id} --repo {repo}`"
+                    )
+                    lines.append(
+                        f"   ⏎ logs: `gh run view {item.run_id} --job {item.job_id} --log --repo {repo}`"
+                    )
+                else:
+                    lines.append(
+                        f"   ⏎ details: `gh run view {item.run_id} --repo {repo}`"
+                    )
+                    lines.append(
+                        f"   ⏎ logs: `gh run view {item.run_id} --log --repo {repo}`"
+                    )
+            elif item.details_url:
+                lines.append(f"   ⏎ details: `{item.details_url}`")
+    if show_all:
+        lines.append(
+            f"⏎ show only non-passed: `gh-llm pr checks --pr {context.number} --repo {repo}`"
+        )
+    elif hidden_count > 0:
+        lines.append(
+            f"{hidden_count} passed checks hidden. ⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`"
+        )
+    else:
+        lines.append(
+            f"⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`"
+        )
+    lines.append("")
+    return lines
+
+
 def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list[str]:
     if not hidden_pages:
         return []
@@ -118,7 +177,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
         if event.reactions_summary:
             lines.append(f"   Reactions: {event.reactions_summary}")
         if event.editable_comment_id:
-            lines.append(f"   🆔 comment_id: {event.editable_comment_id}")
+            lines.append(f"   ◌ comment_id: {event.editable_comment_id}")
             lines.append("   ⌨ comment_body: '<comment_body>'")
             lines.append(
                 f"   ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {event.editable_comment_id} --body '<comment_body>' --pr {context.number} --repo {context.owner}/{context.name}`"

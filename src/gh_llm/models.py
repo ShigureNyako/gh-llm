@@ -57,6 +57,17 @@ class TimelinePage:
     page_info: PageInfo
 
 
+@dataclass(frozen=True)
+class CheckItem:
+    name: str
+    kind: str
+    status: str
+    passed: bool
+    details_url: str | None = None
+    run_id: int | None = None
+    job_id: int | None = None
+
+
 @dataclass
 class TimelineContext:
     owner: str

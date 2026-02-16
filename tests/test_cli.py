@@ -59,6 +59,9 @@ class GhResponder:
             payload = _review_threads_payload(after=after)
             return FakeCompletedProcess(json.dumps(payload))
 
+        if "statusCheckRollup" in query:
+            return FakeCompletedProcess(json.dumps(_checks_payload()))
+
         if "addPullRequestReviewThreadReply" in query:
             return FakeCompletedProcess(
                 json.dumps(
@@ -169,6 +172,9 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "---" in out
     assert "gh-llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "PR actions:" in out
+    assert "## Checks" in out
+    assert "[IN_PROGRESS/NONE] unit-tests (check-run)" in out
+    assert "passed checks hidden." in out
     assert "gh pr comment 77928 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
     assert "gh pr close 77928 --repo PaddlePaddle/Paddle" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
@@ -221,6 +227,14 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "@@ python/test_file.py:L22 @@" in out
     assert "+new_api_call()" in out
     assert "Unresolve via gh-llm:" in out
+
+    code = cli.run(["pr", "checks", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--all"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Checks" in out
+    assert "[COMPLETED/SUCCESS] lint (check-run)" in out
+    assert "gh run view 101 --log --repo PaddlePaddle/Paddle" in out
+    assert "gh run view 202 --job 303 --log --repo PaddlePaddle/Paddle" in out
 
     code = cli.run(
         [
@@ -527,6 +541,54 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                 },
                             }
                         ],
+                    }
+                }
+            }
+        }
+    }
+
+
+def _checks_payload() -> dict[str, Any]:
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "commits": {
+                        "nodes": [
+                            {
+                                "commit": {
+                                    "statusCheckRollup": {
+                                        "contexts": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "CheckRun",
+                                                    "name": "lint",
+                                                    "status": "COMPLETED",
+                                                    "conclusion": "SUCCESS",
+                                                    "detailsUrl": "https://github.com/PaddlePaddle/Paddle/actions/runs/101",
+                                                    "databaseId": 101,
+                                                },
+                                                {
+                                                    "__typename": "CheckRun",
+                                                    "name": "unit-tests",
+                                                    "status": "IN_PROGRESS",
+                                                    "conclusion": None,
+                                                    "detailsUrl": "https://github.com/PaddlePaddle/Paddle/actions/runs/202/job/303",
+                                                    "databaseId": 102,
+                                                },
+                                                {
+                                                    "__typename": "StatusContext",
+                                                    "context": "cla/check",
+                                                    "state": "SUCCESS",
+                                                    "targetUrl": "https://example.com/cla",
+                                                    "description": "CLA check",
+                                                },
+                                            ]
+                                        }
+                                    }
+                                }
+                            }
+                        ]
                     }
                 }
             }

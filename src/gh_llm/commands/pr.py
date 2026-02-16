@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from gh_llm.github_api import GitHubClient
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
+    render_checks_section,
     render_event_detail,
     render_expand_hints,
     render_header,
@@ -59,6 +60,12 @@ def register_pr_parser(subparsers: Any) -> None:
     review_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
     review_expand_parser.set_defaults(handler=cmd_pr_review_expand)
+
+    checks_parser = pr_subparsers.add_parser("checks", help="show CI checks for the pull request")
+    checks_parser.add_argument("--pr", help="PR number/url/branch")
+    checks_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    checks_parser.add_argument("--all", action="store_true", help="show all checks including passed")
+    checks_parser.set_defaults(handler=cmd_pr_checks)
 
     thread_reply_parser = pr_subparsers.add_parser(
         "thread-reply", help="reply to a pull request review thread"
@@ -141,6 +148,14 @@ def cmd_pr_view(args: Any) -> int:
     print()
     for line in render_expand_hints(context, shown_pages):
         print(line)
+    checks = client.fetch_checks(meta.ref) if meta.state == "OPEN" else []
+    for line in render_checks_section(
+        context=context,
+        checks=checks,
+        show_all=False,
+        is_open=(meta.state == "OPEN"),
+    ):
+        print(line)
     for line in render_pr_actions(context):
         print(line)
 
@@ -220,6 +235,21 @@ def cmd_pr_review_expand(args: Any) -> int:
             print(line)
         print()
 
+    return 0
+
+
+def cmd_pr_checks(args: Any) -> int:
+    client = GitHubClient()
+    pager = TimelinePager(client)
+    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+    checks = client.fetch_checks(meta.ref)
+    for line in render_checks_section(
+        context=context,
+        checks=checks,
+        show_all=bool(args.all),
+        is_open=(meta.state == "OPEN"),
+    ):
+        print(line)
     return 0
 
 
