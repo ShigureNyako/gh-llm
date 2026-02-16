@@ -31,7 +31,7 @@ def render_header(context: TimelineContext) -> list[str]:
         "## Diff Actions",
         f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
         "",
-        "## PR Description (Raw Markdown)",
+        "## PR Description",
         "<pr_description>",
         *description.splitlines(),
         "</pr_description>",
@@ -66,8 +66,16 @@ def render_pr_actions(context: TimelineContext) -> list[str]:
         "",
         "---",
         "PR actions:",
-        "⌨ comment_body: '<comment>'",
-        f"⏎ Comment via gh-llm: `gh-llm pr comment --body '<comment>' --pr {context.number} --repo {repo}`",
+        "⌨ comment_body: '<comment_body>'",
+        f"⏎ Comment via gh: `gh pr comment {context.number} --repo {repo} --body '<comment_body>'`",
+        f"⏎ Close PR via gh: `gh pr close {context.number} --repo {repo}`",
+        "⌨ labels_csv: '<label1>,<label2>'",
+        f"⏎ Add labels via gh: `gh pr edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
+        f"⏎ Remove labels via gh: `gh pr edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
+        "⌨ reviewers_csv: '<reviewer1>,<reviewer2>'",
+        f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
+        "⌨ assignees_csv: '<assignee1>,<assignee2>'",
+        f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
         "---",
     ]
 
@@ -85,9 +93,7 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
         "---",
         hidden_label,
         *[
-            _render_template(
-                t"- ⏎ `gh-llm pr timeline-expand {page} --pr {context.number} --repo {repo}`"
-            )
+            _render_template(t"- ⏎ `gh-llm pr timeline-expand {page} --pr {context.number} --repo {repo}`")
             for page in hidden_pages
         ],
         "---",

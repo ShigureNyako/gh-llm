@@ -85,14 +85,6 @@ def register_pr_parser(subparsers: Any) -> None:
     thread_unresolve_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_unresolve_parser.set_defaults(handler=cmd_pr_thread_unresolve)
 
-    comment_parser = pr_subparsers.add_parser(
-        "comment", help="add a top-level comment on the pull request"
-    )
-    comment_parser.add_argument("--body", required=True, help="comment body")
-    comment_parser.add_argument("--pr", help="PR number/url/branch")
-    comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
-    comment_parser.set_defaults(handler=cmd_pr_comment)
-
 
 def cmd_pr_view(args: Any) -> int:
     page_size = int(args.page_size)
@@ -260,15 +252,6 @@ def cmd_pr_thread_unresolve(args: Any) -> int:
     resolved = client.unresolve_review_thread(thread_id=str(args.thread_id))
     print(f"thread: {args.thread_id}")
     print(f"status: {'still_resolved' if resolved else 'unresolved'}")
-    return 0
-
-
-def cmd_pr_comment(args: Any) -> int:
-    client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    client.comment_pull_request(selector=args.pr, repo=args.repo, body=str(args.body))
-    print("status: commented")
     return 0
 
 

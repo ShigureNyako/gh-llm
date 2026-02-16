@@ -42,9 +42,6 @@ class GhResponder:
                 )
             )
 
-        if cmd[:3] == ["gh", "pr", "comment"]:
-            return FakeCompletedProcess("https://github.com/PaddlePaddle/Paddle/pull/77928#issuecomment-1\n")
-
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -140,7 +137,12 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "---" in out
     assert "gh-llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "PR actions:" in out
-    assert "gh-llm pr comment --body '<comment>' --pr 77928 --repo PaddlePaddle/Paddle" in out
+    assert "gh pr comment 77928 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
+    assert "gh pr close 77928 --repo PaddlePaddle/Paddle" in out
+    assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
+    assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --remove-label '<label1>,<label2>'" in out
+    assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-reviewer '<reviewer1>,<reviewer2>'" in out
+    assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-assignee '<assignee1>,<assignee2>'" in out
     assert "link:" not in out
 
     pre_expand_calls = len(responder.calls)
@@ -203,22 +205,6 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "thread: PRRT_mock_1" in out
     assert "reply_comment_id: PRRC_reply_1" in out
     assert "status: replied" in out
-
-    code = cli.run(
-        [
-            "pr",
-            "comment",
-            "--body",
-            "looks good",
-            "--pr",
-            "77928",
-            "--repo",
-            "PaddlePaddle/Paddle",
-        ]
-    )
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "status: commented" in out
 
     code = cli.run(
         [
