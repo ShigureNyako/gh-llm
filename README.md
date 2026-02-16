@@ -1,49 +1,155 @@
-# Python lib starter
+# gh-llm
 
-Just a template for quickly creating a python library.
+CLI tooling for LLM-first GitHub reading and review workflows.
 
 <p align="center">
-   <a href="https://python.org/" target="_blank"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/moelib?logo=python&style=flat-square"></a>
-   <a href="https://pypi.org/project/moelib/" target="_blank"><img src="https://img.shields.io/pypi/v/moelib?style=flat-square" alt="pypi"></a>
-   <a href="https://pypi.org/project/moelib/" target="_blank"><img alt="PyPI - Downloads" src="https://img.shields.io/pypi/dm/moelib?style=flat-square"></a>
-   <a href="LICENSE"><img alt="LICENSE" src="https://img.shields.io/github/license/ShigureLab/moelib?style=flat-square"></a>
-   <br/>
-   <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square"></a>
-   <a href="https://github.com/astral-sh/ruff"><img alt="ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square"></a>
-   <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/gitmoji-%20😜%20😍-FFDD67?style=flat-square"></a>
+  <a href="https://python.org/" target="_blank"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/gh-llm?logo=python&style=flat-square"></a>
+  <a href="https://pypi.org/project/gh-llm/" target="_blank"><img src="https://img.shields.io/pypi/v/gh-llm?style=flat-square" alt="pypi"></a>
+  <a href="https://pypi.org/project/gh-llm/" target="_blank"><img alt="PyPI - Downloads" src="https://img.shields.io/pypi/dm/gh-llm?style=flat-square"></a>
+  <a href="LICENSE"><img alt="LICENSE" src="https://img.shields.io/github/license/ShigureLab/gh-llm?style=flat-square"></a>
+  <br/>
+  <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json&style=flat-square"></a>
+  <a href="https://github.com/astral-sh/ruff"><img alt="ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json&style=flat-square"></a>
+  <a href="https://gitmoji.dev"><img alt="Gitmoji" src="https://img.shields.io/badge/gitmoji-%20😜%20😍-FFDD67?style=flat-square"></a>
 </p>
 
-Before the work starts, replace the `moelib` with the name of your library.
+## Core Goal
 
-## gh-llm prototype
+`gh-llm` is primarily built to help an LLM quickly capture the same key context a human reviewer would get on GitHub Web, and provide actionable next commands at exactly the right places.
 
-This repo includes a `gh-llm` CLI prototype for PR timeline reading with **real GitHub cursor pagination**.
+## Key Ideas
+
+- Timeline-first rendering:
+  merge comments, reviews, commits, labels, references, force-push, and state changes into one ordered stream that mirrors GitHub Web reading.
+- Real cursor pagination:
+  use GitHub GraphQL `first/after` and `last/before`, so page expansion always pulls real server-side data instead of fake local slicing.
+- Progressive context loading:
+  show first + last page first (high-signal summary), then expand hidden pages/events only when needed.
+- Action-oriented output:
+  place ready-to-run `gh` / `gh-llm` commands at decision points (expand, view detail, reply, resolve, review).
+- Stateless interaction model:
+  no fragile local session state required between commands.
+
+## Requirements
+
+- Python `3.14+`
+- `gh` installed and authenticated (`gh auth status`)
+
+## Install
 
 ```bash
-# Show PR overview and timeline page 1 + last page (server-side pagination)
-gh-llm pr view 123 --repo owner/repo
-
-# Expand a timeline page by number (loads more from GitHub API)
-gh-llm pr timeline-expand 2 --pr 77900 --repo owner/repo
-
-# Get full content of one timeline event by index
-gh-llm pr event 42 --pr 77900 --repo owner/repo
-
-# Expand resolved review comments for one or more review events
-gh-llm pr review-expand PRR_xxx,PRR_yyy --pr 77900 --repo owner/repo
+uv tool install gh-llm
+gh-llm --help
 ```
 
-Behavior:
+## Quick Start
 
-- Unified interface:
-  `gh-llm pr view [<number>|<url>|<branch>] [--repo owner/repo] [--page-size N]`
-  and `gh-llm pr timeline-expand <page> --pr ... --repo ... [--page-size N]`.
-- PR metadata is rendered as frontmatter at the top, followed by the PR description body.
-- Timeline data comes from GraphQL `timelineItems` cursor pagination (`first/after` and `last/before`).
-- `pr view` fetches and renders page 1 + last page first, then prints actionable expand commands.
-- When the last page is short, `pr view` also shows the previous page to preserve enough tail context.
-- `pr timeline-expand N` fetches page `N` on-demand via server-side pagination and updates local cursor checkpoints.
-- Long event bodies are truncated only when very long; use `gh-llm pr event <index>` to fetch full text.
-- Resolved review comments are folded by default in timeline pages; use `gh-llm pr review-expand <PRR_ids>` to expand them in bulk.
-- No local session state is required between commands. The tool only uses collision-safe keyed cache for acceleration.
-- Timeline includes commit/review/comment and state events (merged/closed/reopened), with ordering matching GitHub timeline flow.
+### PR Reading
+
+```bash
+# Show first + last timeline pages with actionable hints
+gh-llm pr view 77900 --repo PaddlePaddle/Paddle
+
+# Expand one hidden timeline page
+gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
+
+# Show full content for one event index
+gh-llm pr event 15 --pr 77900 --repo PaddlePaddle/Paddle
+
+# Expand resolved review details in batch
+gh-llm pr review-expand PRR_xxx,PRR_yyy --pr 77900 --repo PaddlePaddle/Paddle
+
+# Checks
+gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
+```
+
+### Issue Reading
+
+```bash
+gh-llm issue view 77924 --repo PaddlePaddle/Paddle
+gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
+gh-llm issue event 6 --issue 77924 --repo PaddlePaddle/Paddle
+```
+
+### Comment / Thread Actions
+
+```bash
+# Edit comment
+gh-llm pr comment-edit IC_xxx --body '<new_body>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm issue comment-edit IC_xxx --body '<new_body>' --issue 77924 --repo PaddlePaddle/Paddle
+
+# Reply / resolve / unresolve review thread
+gh-llm pr thread-reply PRRT_xxx --body '<reply>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr thread-resolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
+```
+
+## PR Review Workflow
+
+### 1) Start from diff hunks
+
+```bash
+gh-llm pr review-start --pr 77938 --repo PaddlePaddle/Paddle
+```
+
+It prints per-hunk anchor lines and ready-to-run comment/suggestion commands.
+
+### 2) Add inline comment
+
+```bash
+gh-llm pr review-comment \
+  --path 'paddle/phi/api/include/compat/torch/library.h' \
+  --line 106 \
+  --side RIGHT \
+  --body 'Please add a regression test for duplicate keyword arguments.' \
+  --pr 77938 --repo PaddlePaddle/Paddle
+```
+
+### 3) Add inline suggestion
+
+```bash
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line 123 \
+  --side RIGHT \
+  --body 'Suggested update' \
+  --suggestion 'replacement_code_here' \
+  --pr 77938 --repo PaddlePaddle/Paddle
+```
+
+### 4) Submit review
+
+```bash
+gh-llm pr review-submit \
+  --event COMMENT \
+  --body 'Overall feedback...' \
+  --pr 77938 --repo PaddlePaddle/Paddle
+```
+
+Submit behavior:
+
+- If you already have a pending review on this PR, `review-submit` submits that pending review.
+- Otherwise, it creates and submits a new review.
+
+This supports the normal flow where one review contains multiple inline comments.
+
+## Render Conventions
+
+- PR/Issue metadata is rendered as frontmatter.
+- PR description uses `<pr_description>...</pr_description>`.
+- Issue description uses `<issue_description>...</issue_description>`.
+- Comment body uses `<comment>...</comment>` to avoid markdown fence ambiguity.
+- Hidden timeline sections are separated by `---` and include expand commands.
+
+## Development
+
+```bash
+uv run ruff check
+uv run pyright
+uv run pytest -q
+```
+
+## License
+
+MIT
