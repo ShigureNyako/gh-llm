@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from gh_llm import __version__
+from gh_llm.commands.issue import register_issue_parser
 from gh_llm.commands.pr import (
     parse_event_indexes as _parse_event_indexes,
     parse_review_ids as _parse_review_ids,
@@ -36,6 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
     register_pr_parser(subparsers)
+    register_issue_parser(subparsers)
 
     return parser
 

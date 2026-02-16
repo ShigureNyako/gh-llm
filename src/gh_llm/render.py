@@ -13,9 +13,24 @@ if TYPE_CHECKING:
 def render_header(context: TimelineContext) -> list[str]:
     description = context.body.strip() or "(no description)"
     repo = f"{context.owner}/{context.name}"
+    is_issue = context.kind == "issue"
+    key = "issue" if is_issue else "pr"
+    noun_title = "Issue" if is_issue else "PR"
+    description_tag = "issue_description" if is_issue else "pr_description"
+    description_title = "## Issue Description" if is_issue else "## PR Description"
+    edit_cmd = (
+        f"gh issue edit {context.number} --repo {repo} --body '<issue_description_markdown>'"
+        if is_issue
+        else f"gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'"
+    )
+    body_placeholder = (
+        "⌨ issue_body: '<issue_description_markdown>'"
+        if is_issue
+        else "⌨ pr_body: '<pr_description_markdown>'"
+    )
     return [
         "---",
-        f"pr: {context.number}",
+        f"{key}: {context.number}",
         f"repo: {context.owner}/{context.name}",
         f"title: {json.dumps(context.title, ensure_ascii=False)}",
         f"url: {context.url}",
@@ -28,22 +43,28 @@ def render_header(context: TimelineContext) -> list[str]:
         f"total_pages: {context.total_pages}",
         "---",
         "",
-        "## Diff Actions",
-        f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
-        "",
-        "## PR Description",
+        *(
+            [
+                "## Diff Actions",
+                f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
+                "",
+            ]
+            if not is_issue
+            else []
+        ),
+        description_title,
         *([f"Reactions: {context.pr_reactions_summary}"] if context.pr_reactions_summary else []),
         *(
             [
-                "⌨ pr_body: '<pr_description_markdown>'",
-                f"⏎ Edit PR description via gh: `gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'`",
+                body_placeholder,
+                f"⏎ Edit {noun_title} description via gh: `{edit_cmd}`",
             ]
             if context.can_edit_pr_body
             else []
         ),
-        "<pr_description>",
+        f"<{description_tag}>",
         *description.splitlines(),
-        "</pr_description>",
+        f"</{description_tag}>",
         "",
     ]
 
@@ -56,7 +77,9 @@ def render_page(page_number: int, context: TimelineContext, page: TimelinePage) 
 
     start_index = _page_start_index(page_number=page_number, context=context, page=page)
     for offset, item in enumerate(page.items):
-        lines.extend(_render_item(index=start_index + offset, event=item, context=context))
+        lines.extend(
+            _render_item(index=start_index + offset, event=item, context=context, command_group=context.kind)
+        )
     return lines
 
 
@@ -85,6 +108,24 @@ def render_pr_actions(context: TimelineContext) -> list[str]:
         f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
         "⌨ assignees_csv: '<assignee1>,<assignee2>'",
         f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
+        "---",
+    ]
+
+
+def render_issue_actions(context: TimelineContext) -> list[str]:
+    repo = f"{context.owner}/{context.name}"
+    return [
+        "",
+        "---",
+        "Issue actions:",
+        "⌨ comment_body: '<comment_body>'",
+        f"⏎ Comment via gh: `gh issue comment {context.number} --repo {repo} --body '<comment_body>'`",
+        f"⏎ Close issue via gh: `gh issue close {context.number} --repo {repo}`",
+        "⌨ labels_csv: '<label1>,<label2>'",
+        f"⏎ Add labels via gh: `gh issue edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
+        f"⏎ Remove labels via gh: `gh issue edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
+        "⌨ assignees_csv: '<assignee1>,<assignee2>'",
+        f"⏎ Assign via gh: `gh issue edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
         "---",
     ]
 
@@ -152,6 +193,7 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
     if not hidden_pages:
         return []
     repo = f"{context.owner}/{context.name}"
+    selector_name = "issue" if context.kind == "issue" else "pr"
     hidden_label = (
         f"Hidden timeline page: {hidden_pages[0]}"
         if len(hidden_pages) == 1
@@ -161,15 +203,18 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
         "---",
         hidden_label,
         *[
-            _render_template(t"- ⏎ `gh-llm pr timeline-expand {page} --pr {context.number} --repo {repo}`")
+            _render_template(
+                t"- ⏎ `gh-llm {context.kind} timeline-expand {page} --{selector_name} {context.number} --repo {repo}`"
+            )
             for page in hidden_pages
         ],
         "---",
     ]
 
 
-def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> list[str]:
+def _render_item(index: int, event: TimelineEvent, context: TimelineContext, command_group: str) -> list[str]:
     timestamp = event.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    selector_name = "issue" if command_group == "issue" else "pr"
     lines = [f"{index}. [{timestamp}] {event.kind} by @{event.actor}"]
     if event.kind == "comment":
         lines.append("   Comment:")
@@ -180,7 +225,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
             lines.append(f"   ◌ comment_id: {event.editable_comment_id}")
             lines.append("   ⌨ comment_body: '<comment_body>'")
             lines.append(
-                f"   ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {event.editable_comment_id} --body '<comment_body>' --pr {context.number} --repo {context.owner}/{context.name}`"
+                f"   ⏎ Edit comment via gh-llm: `gh-llm {command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}`"
             )
     else:
         lines.extend(_indent_block(event.summary))
@@ -191,7 +236,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
             f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
         )
     if event.is_truncated:
-        lines.append(f"   ⏎ run `gh-llm pr event {index}` for full content")
+        lines.append(f"   ⏎ run `gh-llm {command_group} event {index}` for full content")
     if event.kind == "push/commit":
         lines.append(
             f"   Δ commit diff: `gh api repos/{context.owner}/{context.name}/commits/{event.source_id} -H 'Accept: application/vnd.github.v3.diff'`"

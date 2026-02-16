@@ -24,6 +24,7 @@ class PullRequestMeta:
     is_draft: bool
     body: str
     updated_at: str
+    kind: str = "pr"
     reactions_summary: str | None = None
     can_edit_body: bool = False
 
@@ -83,6 +84,7 @@ class TimelineContext:
     is_draft: bool
     body: str
     updated_at: str
+    kind: str = "pr"
     pr_reactions_summary: str | None = None
     can_edit_pr_body: bool = False
     forward_after_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
@@ -103,6 +105,7 @@ class TimelineContext:
             "is_draft": self.is_draft,
             "body": self.body,
             "updated_at": self.updated_at,
+            "kind": self.kind,
             "pr_reactions_summary": self.pr_reactions_summary,
             "can_edit_pr_body": self.can_edit_pr_body,
             "forward_after_by_page": {str(k): v for k, v in self.forward_after_by_page.items()},
@@ -125,6 +128,7 @@ class TimelineContext:
             is_draft=bool(value.get("is_draft")),
             body=_as_str(value.get("body"), ""),
             updated_at=_as_str(value.get("updated_at"), ""),
+            kind=_as_str(value.get("kind"), "pr"),
             pr_reactions_summary=_as_str_optional(value.get("pr_reactions_summary")),
             can_edit_pr_body=bool(value.get("can_edit_pr_body")),
             forward_after_by_page={

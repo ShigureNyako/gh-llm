@@ -44,6 +44,22 @@ class GhResponder:
                 )
             )
 
+        if cmd[:3] == ["gh", "issue", "view"]:
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "number": 77924,
+                        "title": "Issue timeline test",
+                        "url": "https://github.com/PaddlePaddle/Paddle/issues/77924",
+                        "author": {"login": "ShigureNyako"},
+                        "state": "OPEN",
+                        "body": "This is issue description",
+                        "updatedAt": "2026-02-16T09:00:00Z",
+                        "reactionGroups": [{"content": "EYES", "users": {"totalCount": 1}}],
+                    }
+                )
+            )
+
         if cmd[:3] == ["gh", "api", "user"]:
             return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
 
@@ -126,9 +142,15 @@ class GhResponder:
             )
 
         if "timelineItems(first:" in query:
+            if "issue(number:$number)" in query:
+                payload = _issue_forward_page_payload(page_size=first, after=after)
+                return FakeCompletedProcess(json.dumps(payload))
             payload = _forward_page_payload(page_size=first, after=after)
             return FakeCompletedProcess(json.dumps(payload))
 
+        if "issue(number:$number)" in query:
+            payload = _issue_backward_page_payload(page_size=first, before=before)
+            return FakeCompletedProcess(json.dumps(payload))
         payload = _backward_page_payload(page_size=first, before=before)
         return FakeCompletedProcess(json.dumps(payload))
 
@@ -348,6 +370,55 @@ def test_web_like_extra_timeline_events_are_rendered(
     assert "push/force" in out
 
 
+def test_issue_view_and_expand_use_real_cursor_pagination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["issue", "view", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "issue: 77924" in out
+    assert "## Issue Description" in out
+    assert "This is issue description" in out
+    assert "Reactions: 👀 x1" in out
+    assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --body '<issue_description_markdown>'" in out
+    assert "## Diff Actions" not in out
+    assert "## Timeline Page 1/3" in out
+    assert "## Timeline Page 2/3" in out
+    assert "## Timeline Page 3/3" in out
+    assert "Hidden timeline page" not in out
+    assert "Issue actions:" in out
+    assert "gh issue comment 77924 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
+    assert "gh issue close 77924 --repo PaddlePaddle/Paddle" in out
+    assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
+    assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --remove-label '<label1>,<label2>'" in out
+    assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --add-assignee '<assignee1>,<assignee2>'" in out
+    assert "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`" in out
+    assert "cross-reference by @alice (Alice)" in out
+    assert "gh-llm pr view 77900 --repo PaddlePaddle/Paddle" in out
+    assert "issue/closed by @ShigureNyako" in out
+
+    code = cli.run(
+        ["issue", "timeline-expand", "2", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Timeline Page 2/3" in out
+
+    code = cli.run(
+        ["issue", "event", "1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Timeline Event 1" in out
+    assert "ISSUE_END_MARKER" in out
+
+
 def test_graphql_eof_retries_with_backoff(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -445,6 +516,66 @@ def _backward_page_payload(page_size: int, before: str | None) -> dict[str, Any]
         "data": {
             "repository": {
                 "pullRequest": {
+                    "timelineItems": {
+                        "totalCount": len(events),
+                        "pageInfo": {
+                            "hasNextPage": page < total_pages,
+                            "hasPreviousPage": page > 1,
+                            "startCursor": start_cursor,
+                            "endCursor": f"cursor-{page}" if page < total_pages else None,
+                        },
+                        "nodes": chunk,
+                    }
+                }
+            }
+        }
+    }
+
+
+def _issue_forward_page_payload(page_size: int, after: str | None) -> dict[str, Any]:
+    events = _issue_events()
+    total_pages = math.ceil(len(events) / TEST_BASE_PAGE_SIZE)
+    page_map = {None: 1, **{f"cursor-{idx}": idx + 1 for idx in range(1, total_pages)}}
+    page = page_map[after]
+    start, canonical_end = _page_bounds(page=page, total_count=len(events), base_page_size=TEST_BASE_PAGE_SIZE)
+    end = min(start + page_size, canonical_end)
+    chunk = events[start:end]
+
+    end_cursor = f"cursor-{page}" if page < total_pages else None
+    return {
+        "data": {
+            "repository": {
+                "issue": {
+                    "timelineItems": {
+                        "totalCount": len(events),
+                        "pageInfo": {
+                            "hasNextPage": page < total_pages,
+                            "hasPreviousPage": page > 1,
+                            "startCursor": f"back-{page - 1}" if page > 1 else None,
+                            "endCursor": end_cursor,
+                        },
+                        "nodes": chunk,
+                    }
+                }
+            }
+        }
+    }
+
+
+def _issue_backward_page_payload(page_size: int, before: str | None) -> dict[str, Any]:
+    events = _issue_events()
+    total_pages = math.ceil(len(events) / TEST_BASE_PAGE_SIZE)
+    page_map = {None: total_pages, **{f"back-{idx}": idx for idx in range(1, total_pages)}}
+    page = page_map[before]
+    start, canonical_end = _page_bounds(page=page, total_count=len(events), base_page_size=TEST_BASE_PAGE_SIZE)
+    end = min(start + page_size, canonical_end)
+    chunk = events[start:end]
+
+    start_cursor = f"back-{page - 1}" if page > 1 else None
+    return {
+        "data": {
+            "repository": {
+                "issue": {
                     "timelineItems": {
                         "totalCount": len(events),
                         "pageInfo": {
@@ -724,6 +855,57 @@ def _events() -> list[dict[str, Any]]:
 
 
 TEST_BASE_PAGE_SIZE = 2
+
+
+def _issue_events() -> list[dict[str, Any]]:
+    long_comment = ("ISSUE_LONG_TEXT " * 220) + "ISSUE_END_MARKER"
+    return [
+        {
+            "__typename": "IssueComment",
+            "id": "ic1",
+            "url": "https://example.com/ic1",
+            "createdAt": "2026-02-13T10:00:00Z",
+            "body": long_comment,
+            "author": {"login": "bot"},
+            "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 1}}],
+        },
+        {
+            "__typename": "LabeledEvent",
+            "id": "il1",
+            "createdAt": "2026-02-13T11:00:00Z",
+            "actor": {"login": "triager"},
+            "label": {"name": "kind/question"},
+        },
+        {
+            "__typename": "CrossReferencedEvent",
+            "id": "icr1",
+            "createdAt": "2026-02-13T12:00:00Z",
+            "actor": {"login": "alice", "name": "Alice"},
+            "isCrossRepository": False,
+            "source": {
+                "__typename": "PullRequest",
+                "number": 77900,
+                "title": "Related PR",
+                "author": {"login": "bob", "name": "Bob"},
+                "repository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+            },
+        },
+        {
+            "__typename": "IssueComment",
+            "id": "ic2",
+            "url": "https://example.com/ic2",
+            "createdAt": "2026-02-13T13:00:00Z",
+            "body": "self issue comment",
+            "author": {"login": "ShigureNyako"},
+            "reactionGroups": [],
+        },
+        {
+            "__typename": "ClosedEvent",
+            "id": "iclose1",
+            "createdAt": "2026-02-13T14:00:00Z",
+            "actor": {"login": "ShigureNyako"},
+        },
+    ]
 
 
 def _page_bounds(page: int, total_count: int, base_page_size: int) -> tuple[int, int]:

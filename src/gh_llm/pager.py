@@ -22,7 +22,11 @@ class TimelinePager:
         _validate_page_size(page_size)
 
         first_page = self._client.fetch_timeline_forward(
-            meta.ref, page_size=page_size, after=None, show_resolved_details=show_resolved_details
+            meta.ref,
+            page_size=page_size,
+            after=None,
+            show_resolved_details=show_resolved_details,
+            kind=meta.kind,
         )
         total_count = first_page.total_count
         total_pages = _page_count(total_count, page_size)
@@ -41,6 +45,7 @@ class TimelinePager:
             is_draft=meta.is_draft,
             body=meta.body,
             updated_at=meta.updated_at,
+            kind=meta.kind,
             pr_reactions_summary=meta.reactions_summary,
             can_edit_pr_body=meta.can_edit_body,
             forward_after_by_page={1: None},
@@ -55,7 +60,11 @@ class TimelinePager:
             page=total_pages, total_count=total_count, total_pages=total_pages, default_size=page_size
         )
         last_page = self._client.fetch_timeline_backward(
-            meta.ref, page_size=last_page_size, before=None, show_resolved_details=show_resolved_details
+            meta.ref,
+            page_size=last_page_size,
+            before=None,
+            show_resolved_details=show_resolved_details,
+            kind=meta.kind,
         )
         self._remember_backward(context, page=total_pages, cursor_used=None, page_result=last_page)
         return context, first_page, last_page
@@ -80,7 +89,11 @@ class TimelinePager:
         page = start_page
         while True:
             result = self._client.fetch_timeline_forward(
-                meta.ref, page_size=context.page_size, after=cursor, show_resolved_details=show_resolved_details
+                meta.ref,
+                page_size=context.page_size,
+                after=cursor,
+                show_resolved_details=show_resolved_details,
+                kind=meta.kind,
             )
             self._remember_forward(context, page=page, cursor_used=cursor, page_result=result)
             if page == target_page:
@@ -109,6 +122,7 @@ class TimelinePager:
                 page_size=current_page_size,
                 before=cursor,
                 show_resolved_details=show_resolved_details,
+                kind=meta.kind,
             )
             self._remember_backward(context, page=page, cursor_used=cursor, page_result=result)
             if page == target_page:

@@ -24,20 +24,6 @@ class ReferenceSubject:
     repo: str
     detail: str
 
-TIMELINE_ITEM_TYPES = (
-    "ISSUE_COMMENT",
-    "PULL_REQUEST_REVIEW",
-    "PULL_REQUEST_COMMIT",
-    "CROSS_REFERENCED_EVENT",
-    "REFERENCED_EVENT",
-    "LABELED_EVENT",
-    "UNLABELED_EVENT",
-    "HEAD_REF_FORCE_PUSHED_EVENT",
-    "MERGED_EVENT",
-    "CLOSED_EVENT",
-    "REOPENED_EVENT",
-)
-
 FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
@@ -125,6 +111,76 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
 }
 """.strip()
 
+ISSUE_FORWARD_TIMELINE_QUERY = """
+query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
+  repository(owner:$owner,name:$name){
+    issue(number:$number){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+        totalCount
+        pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
+        nodes{
+          __typename
+          ... on IssueComment{
+            id
+            url
+            createdAt
+            body
+            author{login ... on User{name}}
+            reactionGroups{content users{totalCount}}
+          }
+          ... on CrossReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            source{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on ReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            subject{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
 BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
@@ -203,6 +259,76 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             afterCommit{oid}
           }
           ... on MergedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+ISSUE_BACKWARD_TIMELINE_QUERY = """
+query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
+  repository(owner:$owner,name:$name){
+    issue(number:$number){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+        totalCount
+        pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
+        nodes{
+          __typename
+          ... on IssueComment{
+            id
+            url
+            createdAt
+            body
+            author{login ... on User{name}}
+            reactionGroups{content users{totalCount}}
+          }
+          ... on CrossReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            source{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on ReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            subject{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
           ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
@@ -329,12 +455,66 @@ class GitHubClient:
             is_draft=is_draft,
             body=body,
             updated_at=updated_at,
+            kind="pr",
+            reactions_summary=reactions_summary,
+            can_edit_body=can_edit_body,
+        )
+
+    def resolve_issue(self, selector: str | None, repo: str | None) -> PullRequestMeta:
+        fields = [
+            "number",
+            "title",
+            "url",
+            "author",
+            "state",
+            "body",
+            "updatedAt",
+            "reactionGroups",
+        ]
+        cmd = ["gh", "issue", "view"]
+        if selector:
+            cmd.append(selector)
+        if repo:
+            cmd.extend(["--repo", repo])
+        cmd.extend(["--json", ",".join(fields)])
+
+        payload = _run_command_json(cmd)
+        number = _as_int(payload.get("number"), context="number")
+        title = _as_optional_str(payload.get("title")) or ""
+        url = _as_optional_str(payload.get("url")) or ""
+        author = _get_login(payload.get("author"))
+        state = _as_optional_str(payload.get("state")) or "UNKNOWN"
+        body = _as_optional_str(payload.get("body")) or ""
+        updated_at = _as_optional_str(payload.get("updatedAt")) or ""
+        reactions_summary = _format_reactions(payload.get("reactionGroups"))
+
+        owner, name = _parse_owner_repo(url)
+        ref = PullRequestRef(owner=owner, name=name, number=number)
+        if self._viewer_login is None:
+            self._viewer_login = self._get_viewer_login()
+        can_edit_body = author == (self._viewer_login or "")
+        return PullRequestMeta(
+            ref=ref,
+            title=title,
+            url=url,
+            author=author,
+            state=state,
+            is_draft=False,
+            body=body,
+            updated_at=updated_at,
+            kind="issue",
             reactions_summary=reactions_summary,
             can_edit_body=can_edit_body,
         )
 
     def fetch_timeline_forward(
-        self, ref: PullRequestRef, page_size: int, after: str | None, *, show_resolved_details: bool = False
+        self,
+        ref: PullRequestRef,
+        page_size: int,
+        after: str | None,
+        *,
+        show_resolved_details: bool = False,
+        kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
             "owner": ref.owner,
@@ -345,18 +525,29 @@ class GitHubClient:
         if after is not None:
             variables["after"] = after
 
-        connection = _run_graphql_connection(FORWARD_TIMELINE_QUERY, variables)
-        threads_by_review = self._get_review_threads_by_review(ref)
+        if kind == "issue":
+            connection = _run_graphql_connection(ISSUE_FORWARD_TIMELINE_QUERY, variables, subject_key="issue")
+            threads_by_review: dict[str, list[dict[str, object]]] = {}
+        else:
+            connection = _run_graphql_connection(FORWARD_TIMELINE_QUERY, variables, subject_key="pullRequest")
+            threads_by_review = self._get_review_threads_by_review(ref)
         return _parse_timeline_page(
             connection,
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             viewer_login=self._viewer_login or "",
+            subject_kind=kind,
         )
 
     def fetch_timeline_backward(
-        self, ref: PullRequestRef, page_size: int, before: str | None, *, show_resolved_details: bool = False
+        self,
+        ref: PullRequestRef,
+        page_size: int,
+        before: str | None,
+        *,
+        show_resolved_details: bool = False,
+        kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
             "owner": ref.owner,
@@ -367,14 +558,19 @@ class GitHubClient:
         if before is not None:
             variables["before"] = before
 
-        connection = _run_graphql_connection(BACKWARD_TIMELINE_QUERY, variables)
-        threads_by_review = self._get_review_threads_by_review(ref)
+        if kind == "issue":
+            connection = _run_graphql_connection(ISSUE_BACKWARD_TIMELINE_QUERY, variables, subject_key="issue")
+            threads_by_review: dict[str, list[dict[str, object]]] = {}
+        else:
+            connection = _run_graphql_connection(BACKWARD_TIMELINE_QUERY, variables, subject_key="pullRequest")
+            threads_by_review = self._get_review_threads_by_review(ref)
         return _parse_timeline_page(
             connection,
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             viewer_login=self._viewer_login or "",
+            subject_kind=kind,
         )
 
     def _get_review_threads_by_review(self, ref: PullRequestRef) -> dict[str, list[dict[str, object]]]:
@@ -602,12 +798,14 @@ mutation($id:ID!,$body:String!){
                 )
         return items
 
-def _run_graphql_connection(query: str, variables: dict[str, str | int]) -> dict[str, object]:
+def _run_graphql_connection(
+    query: str, variables: dict[str, str | int], *, subject_key: str = "pullRequest"
+) -> dict[str, object]:
     payload = _run_graphql_payload(query, variables)
     data_obj = _as_dict(payload.get("data"), context="graphql data")
     repo_obj = _as_dict(data_obj.get("repository"), context="repository")
-    pr_obj = _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
-    return _as_dict(pr_obj.get("timelineItems"), context="timelineItems")
+    subject_obj = _as_dict(repo_obj.get(subject_key), context=subject_key)
+    return _as_dict(subject_obj.get("timelineItems"), context="timelineItems")
 
 
 def _run_graphql_payload(query: str, variables: dict[str, str | int]) -> dict[str, object]:
@@ -656,6 +854,7 @@ def _parse_timeline_page(
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     viewer_login: str,
+    subject_kind: str = "pr",
 ) -> TimelinePage:
     total_count = _as_int_default(connection.get("totalCount"), default=0)
     page_info_obj = _as_dict(connection.get("pageInfo"), context="pageInfo")
@@ -674,6 +873,7 @@ def _parse_timeline_page(
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             viewer_login=viewer_login,
+            subject_kind=subject_kind,
         )
         if parsed is not None:
             items.append(parsed)
@@ -689,6 +889,7 @@ def _parse_node(
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     viewer_login: str,
+    subject_kind: str,
 ) -> TimelineEvent | None:
     typename = str(node.get("__typename") or "")
     if typename == "IssueComment":
@@ -857,16 +1058,24 @@ def _parse_node(
             source_id=_as_optional_str(node.get("id")) or "push/force",
         )
 
-    if typename in {"MergedEvent", "ClosedEvent", "ReopenedEvent"}:
+    if typename == "MergedEvent":
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="pr/merged",
+            actor=_get_actor_display(node.get("actor")),
+            summary="pull request merged",
+            source_id=_as_optional_str(node.get("id")) or "pr/merged",
+        )
+
+    if typename in {"ClosedEvent", "ReopenedEvent"}:
+        noun = "issue" if subject_kind == "issue" else "pull request"
         kind_map = {
-            "MergedEvent": "pr/merged",
-            "ClosedEvent": "pr/closed",
-            "ReopenedEvent": "pr/reopened",
+            "ClosedEvent": f"{subject_kind}/closed",
+            "ReopenedEvent": f"{subject_kind}/reopened",
         }
         summary_map = {
-            "MergedEvent": "pull request merged",
-            "ClosedEvent": "pull request closed",
-            "ReopenedEvent": "pull request reopened",
+            "ClosedEvent": f"{noun} closed",
+            "ReopenedEvent": f"{noun} reopened",
         }
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
