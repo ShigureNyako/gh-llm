@@ -30,9 +30,7 @@ def register_issue_parser(subparsers: Any) -> None:
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
     view_parser.set_defaults(handler=cmd_issue_view)
 
-    timeline_expand_parser = issue_subparsers.add_parser(
-        "timeline-expand", help="load one timeline page by number"
-    )
+    timeline_expand_parser = issue_subparsers.add_parser("timeline-expand", help="load one timeline page by number")
     timeline_expand_parser.add_argument("page", type=int, help="1-based page number")
     timeline_expand_parser.add_argument("--issue", help="Issue number/url")
     timeline_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -46,9 +44,7 @@ def register_issue_parser(subparsers: Any) -> None:
     event_parser.add_argument("--page-size", type=int, help="timeline entries per page")
     event_parser.set_defaults(handler=cmd_issue_event)
 
-    comment_edit_parser = issue_subparsers.add_parser(
-        "comment-edit", help="edit one issue comment by node id"
-    )
+    comment_edit_parser = issue_subparsers.add_parser("comment-edit", help="edit one issue comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx")
     comment_edit_parser.add_argument("--body", required=True, help="new comment body")
     comment_edit_parser.add_argument("--issue", help="Issue number/url")
@@ -72,9 +68,7 @@ def cmd_issue_view(args: Any) -> int:
 
     if last_page is not None:
         trailing_pages: list[tuple[int, TimelinePage]] = []
-        include_previous = (
-            context.total_pages > 2 and context.total_count % context.page_size != 0
-        )
+        include_previous = context.total_pages > 2 and context.total_count % context.page_size != 0
         if include_previous:
             previous_page_number = context.total_pages - 1
             previous_page = pager.fetch_page(meta=meta, context=context, page=previous_page_number)

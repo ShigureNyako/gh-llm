@@ -24,6 +24,7 @@ class ReferenceSubject:
     repo: str
     detail: str
 
+
 FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
@@ -885,9 +886,7 @@ mutation($id:ID!,$body:String!){
                 },
             )
             data_obj = _as_dict(payload.get("data"), context="graphql data")
-            submitted_obj = _as_dict(
-                data_obj.get("submitPullRequestReview"), context="submitPullRequestReview"
-            )
+            submitted_obj = _as_dict(data_obj.get("submitPullRequestReview"), context="submitPullRequestReview")
             review_obj = _as_dict(submitted_obj.get("pullRequestReview"), context="pullRequestReview")
             review_id = _as_optional_str(review_obj.get("id")) or ""
             review_state = _as_optional_str(review_obj.get("state")) or ""
@@ -977,6 +976,7 @@ mutation($id:ID!,$body:String!){
         if not pr_id:
             raise RuntimeError("failed to resolve pull request node id")
         return pr_id
+
 
 def _run_graphql_connection(
     query: str, variables: dict[str, str | int], *, subject_key: str = "pullRequest"
@@ -1177,17 +1177,13 @@ def _parse_node(
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"referenced by PR #{source_number} {detail} ({source_repo})")
-            summary_lines.append(
-                f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`"
-            )
+            summary_lines.append(f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`")
         elif subject is not None and subject.type == "Issue":
             source_number = subject.number
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"referenced by issue #{source_number} {detail} ({source_repo})")
-            summary_lines.append(
-                f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`"
-            )
+            summary_lines.append(f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`")
         else:
             summary_lines.append("referenced by another item")
         if is_cross:
@@ -1212,17 +1208,13 @@ def _parse_node(
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"cross-referenced by PR #{source_number} {detail} ({source_repo})")
-            summary_lines.append(
-                f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`"
-            )
+            summary_lines.append(f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`")
         elif subject is not None and subject.type == "Issue":
             source_number = subject.number
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"cross-referenced by issue #{source_number} {detail} ({source_repo})")
-            summary_lines.append(
-                f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`"
-            )
+            summary_lines.append(f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`")
         else:
             summary_lines.append("cross-referenced by another item")
         if is_cross:
@@ -1384,7 +1376,9 @@ def _build_review_text(
     viewer_login: str,
 ) -> tuple[str, int]:
     body = (_as_optional_str(node.get("body")) or "").strip()
-    total_count = sum(len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review)
+    total_count = sum(
+        len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review
+    )
     detail_lines: list[str] = []
     resolved_hidden_count = 0
     rendered_comments = 0
@@ -1662,7 +1656,7 @@ def _reaction_emoji(content: str) -> str:
 def _is_retryable_gh_error(stderr: str) -> bool:
     lowered = stderr.lower()
     retryable_patterns = (
-        "post \"https://api.github.com/graphql\": eof",
+        'post "https://api.github.com/graphql": eof',
         "eof",
         "timeout",
         "tls handshake timeout",

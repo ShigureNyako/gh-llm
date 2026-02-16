@@ -97,15 +97,7 @@ class GhResponder:
 
         if "addPullRequestReviewThreadReply" in query:
             return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "addPullRequestReviewThreadReply": {
-                                "comment": {"id": "PRRC_reply_1"}
-                            }
-                        }
-                    }
-                )
+                json.dumps({"data": {"addPullRequestReviewThreadReply": {"comment": {"id": "PRRC_reply_1"}}}})
             )
 
         if "addPullRequestReviewThread(input:" in query:
@@ -152,15 +144,7 @@ class GhResponder:
                     }
                 )
             return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "repository": {
-                                "pullRequest": {"reviews": {"nodes": nodes}}
-                            }
-                        }
-                    }
-                )
+                json.dumps({"data": {"repository": {"pullRequest": {"reviews": {"nodes": nodes}}}}})
             )
 
         if "submitPullRequestReview(input:" in query:
@@ -199,51 +183,21 @@ class GhResponder:
         if "updatePullRequestReviewComment" in query:
             return FakeCompletedProcess(
                 json.dumps(
-                    {
-                        "data": {
-                            "updatePullRequestReviewComment": {
-                                "pullRequestReviewComment": {"id": "PRRC_self_1"}
-                            }
-                        }
-                    }
+                    {"data": {"updatePullRequestReviewComment": {"pullRequestReviewComment": {"id": "PRRC_self_1"}}}}
                 )
             )
 
         if "updateIssueComment" in query:
-            return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "updateIssueComment": {"issueComment": {"id": "c3"}}
-                        }
-                    }
-                )
-            )
+            return FakeCompletedProcess(json.dumps({"data": {"updateIssueComment": {"issueComment": {"id": "c3"}}}}))
 
         if "unresolveReviewThread" in query:
             return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "unresolveReviewThread": {
-                                "thread": {"id": "PRRT_mock_2", "isResolved": False}
-                            }
-                        }
-                    }
-                )
+                json.dumps({"data": {"unresolveReviewThread": {"thread": {"id": "PRRT_mock_2", "isResolved": False}}}})
             )
 
         if "resolveReviewThread" in query:
             return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "resolveReviewThread": {
-                                "thread": {"id": "PRRT_mock_1", "isResolved": True}
-                            }
-                        }
-                    }
-                )
+                json.dumps({"data": {"resolveReviewThread": {"thread": {"id": "PRRT_mock_1", "isResolved": True}}}})
             )
 
         if "timelineItems(first:" in query:
@@ -309,22 +263,24 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-reviewer '<reviewer1>,<reviewer2>'" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-assignee '<assignee1>,<assignee2>'" in out
     assert "link:" not in out
-    assert "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
 
     pre_expand_calls = len(responder.calls)
-    code = cli.run(
-        ["pr", "timeline-expand", "2", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
-    )
+    code = cli.run(["pr", "timeline-expand", "2", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
 
     out = capsys.readouterr().out
     assert "## Timeline Page 2/4" in out
     assert "commit 2" in out
-    assert "Δ commit diff: `gh api repos/PaddlePaddle/Paddle/commits/oid-2 -H 'Accept: application/vnd.github.v3.diff'`" in out
-
-    code = cli.run(
-        ["pr", "timeline-expand", "3", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
+    assert (
+        "Δ commit diff: `gh api repos/PaddlePaddle/Paddle/commits/oid-2 -H 'Accept: application/vnd.github.v3.diff'`"
+        in out
     )
+
+    code = cli.run(["pr", "timeline-expand", "3", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
     out = capsys.readouterr().out
     assert "## Timeline Page 3/4" in out
@@ -340,7 +296,10 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "Reply via gh-llm:" in out
     assert "Resolve via gh-llm:" in out
     assert "Unresolve via gh-llm:" not in out
-    assert "Edit comment via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Edit comment via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
     assert "Reply via gh: `gh api graphql" not in out
     assert "Resolve via gh: `gh api graphql" not in out
 
@@ -503,7 +462,10 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --remove-label '<label1>,<label2>'" in out
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --add-assignee '<assignee1>,<assignee2>'" in out
-    assert "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`"
+        in out
+    )
     assert "cross-reference by @alice (Alice)" in out
     assert "gh-llm pr view 77900 --repo PaddlePaddle/Paddle" in out
     assert "issue/closed by @ShigureNyako" in out
@@ -515,9 +477,7 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## Timeline Page 2/3" in out
 
-    code = cli.run(
-        ["issue", "event", "1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
-    )
+    code = cli.run(["issue", "event", "1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
     out = capsys.readouterr().out
     assert "## Timeline Event 1" in out
@@ -860,10 +820,10 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "author": {"login": "ShigureNyako"},
                                             "reactionGroups": [],
                                             "pullRequestReview": {"id": "PRR_mock"},
-                                        }
+                                        },
                                     ]
                                 },
-                            }
+                            },
                         ],
                     }
                 }

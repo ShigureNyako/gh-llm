@@ -24,9 +24,7 @@ def render_header(context: TimelineContext) -> list[str]:
         else f"gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'"
     )
     body_placeholder = (
-        "⌨ issue_body: '<issue_description_markdown>'"
-        if is_issue
-        else "⌨ pr_body: '<pr_description_markdown>'"
+        "⌨ issue_body: '<issue_description_markdown>'" if is_issue else "⌨ pr_body: '<pr_description_markdown>'"
     )
     return [
         "---",
@@ -77,9 +75,7 @@ def render_page(page_number: int, context: TimelineContext, page: TimelinePage) 
 
     start_index = _page_start_index(page_number=page_number, context=context, page=page)
     for offset, item in enumerate(page.items):
-        lines.extend(
-            _render_item(index=start_index + offset, event=item, context=context, command_group=context.kind)
-        )
+        lines.extend(_render_item(index=start_index + offset, event=item, context=context, command_group=context.kind))
     return lines
 
 
@@ -158,33 +154,21 @@ def render_checks_section(
             lines.append(f"{idx}. [{item.status}] {item.name} ({item.kind})")
             if item.run_id is not None:
                 if item.job_id is not None:
-                    lines.append(
-                        f"   ⏎ details: `gh run view {item.run_id} --job {item.job_id} --repo {repo}`"
-                    )
-                    lines.append(
-                        f"   ⏎ logs: `gh run view {item.run_id} --job {item.job_id} --log --repo {repo}`"
-                    )
+                    lines.append(f"   ⏎ details: `gh run view {item.run_id} --job {item.job_id} --repo {repo}`")
+                    lines.append(f"   ⏎ logs: `gh run view {item.run_id} --job {item.job_id} --log --repo {repo}`")
                 else:
-                    lines.append(
-                        f"   ⏎ details: `gh run view {item.run_id} --repo {repo}`"
-                    )
-                    lines.append(
-                        f"   ⏎ logs: `gh run view {item.run_id} --log --repo {repo}`"
-                    )
+                    lines.append(f"   ⏎ details: `gh run view {item.run_id} --repo {repo}`")
+                    lines.append(f"   ⏎ logs: `gh run view {item.run_id} --log --repo {repo}`")
             elif item.details_url:
                 lines.append(f"   ⏎ details: `{item.details_url}`")
     if show_all:
-        lines.append(
-            f"⏎ show only non-passed: `gh-llm pr checks --pr {context.number} --repo {repo}`"
-        )
+        lines.append(f"⏎ show only non-passed: `gh-llm pr checks --pr {context.number} --repo {repo}`")
     elif hidden_count > 0:
         lines.append(
             f"{hidden_count} passed checks hidden. ⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`"
         )
     else:
-        lines.append(
-            f"⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`"
-        )
+        lines.append(f"⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`")
     lines.append("")
     return lines
 

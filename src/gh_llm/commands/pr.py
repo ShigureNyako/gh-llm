@@ -32,9 +32,7 @@ def register_pr_parser(subparsers: Any) -> None:
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
     view_parser.set_defaults(handler=cmd_pr_view)
 
-    timeline_expand_parser = pr_subparsers.add_parser(
-        "timeline-expand", help="load one timeline page by number"
-    )
+    timeline_expand_parser = pr_subparsers.add_parser("timeline-expand", help="load one timeline page by number")
     timeline_expand_parser.add_argument("page", type=int, help="1-based page number")
     timeline_expand_parser.add_argument("--pr", help="PR number/url/branch")
     timeline_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -68,9 +66,7 @@ def register_pr_parser(subparsers: Any) -> None:
     checks_parser.add_argument("--all", action="store_true", help="show all checks including passed")
     checks_parser.set_defaults(handler=cmd_pr_checks)
 
-    thread_reply_parser = pr_subparsers.add_parser(
-        "thread-reply", help="reply to a pull request review thread"
-    )
+    thread_reply_parser = pr_subparsers.add_parser("thread-reply", help="reply to a pull request review thread")
     thread_reply_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
     thread_reply_parser.add_argument("--body", required=True, help="reply body")
     thread_reply_parser.add_argument("--pr", help="PR number/url/branch")
@@ -93,9 +89,7 @@ def register_pr_parser(subparsers: Any) -> None:
     thread_unresolve_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_unresolve_parser.set_defaults(handler=cmd_pr_thread_unresolve)
 
-    comment_edit_parser = pr_subparsers.add_parser(
-        "comment-edit", help="edit one issue/review comment by node id"
-    )
+    comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit one issue/review comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
     comment_edit_parser.add_argument("--body", required=True, help="new comment body")
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
@@ -173,9 +167,7 @@ def cmd_pr_view(args: Any) -> int:
 
     if last_page is not None:
         trailing_pages: list[tuple[int, TimelinePage]] = []
-        include_previous = (
-            context.total_pages > 2 and context.total_count % context.page_size != 0
-        )
+        include_previous = context.total_pages > 2 and context.total_count % context.page_size != 0
         if include_previous:
             previous_page_number = context.total_pages - 1
             previous_page = pager.fetch_page(meta=meta, context=context, page=previous_page_number)
@@ -262,9 +254,7 @@ def cmd_pr_review_expand(args: Any) -> int:
 
     matched: dict[str, tuple[int, TimelinePage]] = {}
     for page_number in range(1, context.total_pages + 1):
-        page = pager.fetch_page(
-            meta=meta, context=context, page=page_number, show_resolved_details=True
-        )
+        page = pager.fetch_page(meta=meta, context=context, page=page_number, show_resolved_details=True)
         for offset, event in enumerate(page.items):
             if not event.kind.startswith("review/"):
                 continue
