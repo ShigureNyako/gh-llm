@@ -38,6 +38,7 @@ class GhResponder:
                         "state": "OPEN",
                         "isDraft": False,
                         "body": "This is PR description",
+                        "reactionGroups": [{"content": "ROCKET", "users": {"totalCount": 1}}],
                     }
                 )
             )
@@ -155,9 +156,12 @@ def test_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## PR Description" in out
     assert "This is PR description" in out
+    assert "Reactions: 🚀 x1" in out
+    assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --body '<pr_description_markdown>'" in out
     assert "## Diff Actions" in out
     assert "Δ PR diff: `gh pr diff 77928 --repo PaddlePaddle/Paddle`" in out
     assert "## Timeline Page 1/4" in out
+    assert "Reactions: 👍 x2" in out
     assert "## Timeline Page 3/4" in out
     assert "## Timeline Page 4/4" in out
     assert "Hidden timeline page: 2" in out
@@ -195,6 +199,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "[1] python/test_file.py:L21 by @reviewer" in out
     assert "[2] python/test_file.py:L22 by @reviewer" not in out
     assert "Diff Hunk:" in out
+    assert "Reactions: ❤️ x1" in out
     assert "1 resolved review comments are collapsed;" in out
     assert "gh-llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "thread_id: PRRT_mock_1" in out
@@ -418,6 +423,7 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "diffHunk": "@@ -22,1 +22,1 @@\n-old_api_call()",
                                             "createdAt": "2026-02-14T14:50:02Z",
                                             "author": {"login": "reviewer"},
+                                            "reactionGroups": [],
                                             "pullRequestReview": {"id": "PRR_mock"},
                                         }
                                     ]
@@ -439,6 +445,7 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "diffHunk": "@@ -20,2 +20,2 @@\n-old_name\n+new_name",
                                             "createdAt": "2026-02-14T14:50:01Z",
                                             "author": {"login": "reviewer"},
+                                            "reactionGroups": [{"content": "HEART", "users": {"totalCount": 1}}],
                                             "pullRequestReview": {"id": "PRR_mock"},
                                         },
                                         {
@@ -452,6 +459,7 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "diffHunk": "@@ -23,1 +23,1 @@\n-old\n+new",
                                             "createdAt": "2026-02-14T14:50:03Z",
                                             "author": {"login": "ShigureNyako"},
+                                            "reactionGroups": [],
                                             "pullRequestReview": {"id": "PRR_mock"},
                                         }
                                     ]
@@ -475,6 +483,7 @@ def _events() -> list[dict[str, Any]]:
             "createdAt": "2026-02-14T14:31:36Z",
             "body": long_comment,
             "author": {"login": "bot"},
+            "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 2}}],
         },
         {
             "__typename": "PullRequestCommit",
@@ -501,6 +510,7 @@ def _events() -> list[dict[str, Any]]:
             "createdAt": "2026-02-14T14:44:36Z",
             "body": "comment 2",
             "author": {"login": "user2"},
+            "reactionGroups": [],
         },
         {
             "__typename": "PullRequestReview",
@@ -523,6 +533,7 @@ def _events() -> list[dict[str, Any]]:
             "createdAt": "2026-02-14T15:11:00Z",
             "body": "self comment",
             "author": {"login": "ShigureNyako"},
+            "reactionGroups": [],
         },
     ]
 

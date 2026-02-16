@@ -41,6 +41,8 @@ class TimelinePager:
             is_draft=meta.is_draft,
             body=meta.body,
             updated_at=meta.updated_at,
+            pr_reactions_summary=meta.reactions_summary,
+            can_edit_pr_body=meta.can_edit_body,
             forward_after_by_page={1: None},
             backward_before_by_page={total_pages: None},
         )

@@ -32,6 +32,15 @@ def render_header(context: TimelineContext) -> list[str]:
         f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
         "",
         "## PR Description",
+        *([f"Reactions: {context.pr_reactions_summary}"] if context.pr_reactions_summary else []),
+        *(
+            [
+                "⌨ pr_body: '<pr_description_markdown>'",
+                f"⏎ Edit PR description via gh: `gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'`",
+            ]
+            if context.can_edit_pr_body
+            else []
+        ),
         "<pr_description>",
         *description.splitlines(),
         "</pr_description>",
@@ -106,6 +115,8 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
     if event.kind == "comment":
         lines.append("   Comment:")
         lines.extend(_indented_tag_block("comment", event.summary, indent="   "))
+        if event.reactions_summary:
+            lines.append(f"   Reactions: {event.reactions_summary}")
         if event.editable_comment_id:
             lines.append(f"   🆔 comment_id: {event.editable_comment_id}")
             lines.append("   ⌨ comment_body: '<comment_body>'")
@@ -157,6 +168,8 @@ def render_event_detail(index: int, event: TimelineEvent) -> list[str]:
     detail = event.full_text or event.summary
     if event.kind == "comment":
         lines.extend(["<comment>", *detail.splitlines(), "</comment>"])
+        if event.reactions_summary:
+            lines.append(f"Reactions: {event.reactions_summary}")
     else:
         lines.extend(detail.splitlines() or [event.summary])
     return lines

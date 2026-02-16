@@ -24,6 +24,8 @@ class PullRequestMeta:
     is_draft: bool
     body: str
     updated_at: str
+    reactions_summary: str | None = None
+    can_edit_body: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class TimelineEvent:
     is_truncated: bool = False
     resolved_hidden_count: int = 0
     editable_comment_id: str | None = None
+    reactions_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,8 @@ class TimelineContext:
     is_draft: bool
     body: str
     updated_at: str
+    pr_reactions_summary: str | None = None
+    can_edit_pr_body: bool = False
     forward_after_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
     backward_before_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
 
@@ -87,6 +92,8 @@ class TimelineContext:
             "is_draft": self.is_draft,
             "body": self.body,
             "updated_at": self.updated_at,
+            "pr_reactions_summary": self.pr_reactions_summary,
+            "can_edit_pr_body": self.can_edit_pr_body,
             "forward_after_by_page": {str(k): v for k, v in self.forward_after_by_page.items()},
             "backward_before_by_page": {str(k): v for k, v in self.backward_before_by_page.items()},
         }
@@ -107,6 +114,8 @@ class TimelineContext:
             is_draft=bool(value.get("is_draft")),
             body=_as_str(value.get("body"), ""),
             updated_at=_as_str(value.get("updated_at"), ""),
+            pr_reactions_summary=_as_str_optional(value.get("pr_reactions_summary")),
+            can_edit_pr_body=bool(value.get("can_edit_pr_body")),
             forward_after_by_page={
                 int(k): None if v is None else str(v)
                 for k, v in _ensure_dict(value.get("forward_after_by_page")).items()
@@ -139,6 +148,14 @@ def _as_int(value: object, default: int) -> int:
 def _as_str(value: object, default: str) -> str:
     if value is None:
         return default
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _as_str_optional(value: object) -> str | None:
+    if value is None:
+        return None
     if isinstance(value, str):
         return value
     return str(value)

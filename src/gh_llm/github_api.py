@@ -29,7 +29,14 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
           __typename
-          ... on IssueComment{ id url createdAt body author{login} }
+          ... on IssueComment{
+            id
+            url
+            createdAt
+            body
+            author{login}
+            reactionGroups{content users{totalCount}}
+          }
           ... on PullRequestReview{
             id
             submittedAt
@@ -57,7 +64,14 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
           __typename
-          ... on IssueComment{ id url createdAt body author{login} }
+          ... on IssueComment{
+            id
+            url
+            createdAt
+            body
+            author{login}
+            reactionGroups{content users{totalCount}}
+          }
           ... on PullRequestReview{
             id
             submittedAt
@@ -97,6 +111,7 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
               diffHunk
               createdAt
               author{login}
+              reactionGroups{content users{totalCount}}
               pullRequestReview{id}
             }
           }
@@ -114,7 +129,17 @@ class GitHubClient:
         self._viewer_login: str | None = None
 
     def resolve_pull_request(self, selector: str | None, repo: str | None) -> PullRequestMeta:
-        fields = ["number", "title", "url", "author", "state", "isDraft", "body", "updatedAt"]
+        fields = [
+            "number",
+            "title",
+            "url",
+            "author",
+            "state",
+            "isDraft",
+            "body",
+            "updatedAt",
+            "reactionGroups",
+        ]
         cmd = ["gh", "pr", "view"]
         if selector:
             cmd.append(selector)
@@ -131,11 +156,13 @@ class GitHubClient:
         is_draft = bool(payload.get("isDraft"))
         body = _as_optional_str(payload.get("body")) or ""
         updated_at = _as_optional_str(payload.get("updatedAt")) or ""
+        reactions_summary = _format_reactions(payload.get("reactionGroups"))
 
         owner, name = _parse_owner_repo(url)
         ref = PullRequestRef(owner=owner, name=name, number=number)
         if self._viewer_login is None:
             self._viewer_login = self._get_viewer_login()
+        can_edit_body = author == (self._viewer_login or "")
         return PullRequestMeta(
             ref=ref,
             title=title,
@@ -145,6 +172,8 @@ class GitHubClient:
             is_draft=is_draft,
             body=body,
             updated_at=updated_at,
+            reactions_summary=reactions_summary,
+            can_edit_body=can_edit_body,
         )
 
     def fetch_timeline_forward(
@@ -439,6 +468,7 @@ def _parse_node(
             editable_comment_id=(
                 _as_optional_str(node.get("id")) if _get_login(node.get("author")) == viewer_login else None
             ),
+            reactions_summary=_format_reactions(node.get("reactionGroups")),
         )
 
     if typename == "PullRequestReview":
@@ -681,6 +711,9 @@ def _render_review_comment_block(
     if suggestion_diff:
         lines.append("  Suggested Change:")
         lines.extend(_indented_fenced_block("diff", suggestion_diff, indent="  "))
+    reactions_summary = _format_reactions(comment.get("reactionGroups"))
+    if reactions_summary:
+        lines.append(f"  Reactions: {reactions_summary}")
     comment_id = _as_optional_str(comment.get("id")) or ""
     if comment_id and author == viewer_login:
         lines.append(f"  🆔 comment_id: {comment_id}")
@@ -804,3 +837,39 @@ def _as_int_default(value: object, *, default: int) -> int:
 
 def _has_graphql_errors(payload: dict[str, object]) -> bool:
     return len(_as_list(payload.get("errors"))) > 0
+
+
+def _format_reactions(value: object) -> str | None:
+    groups = _as_list(value)
+    parts: list[str] = []
+    for raw_group in groups:
+        group = _as_dict_optional(raw_group)
+        if group is None:
+            continue
+        users_obj = _as_dict_optional(group.get("users"))
+        if users_obj is None:
+            continue
+        count = _as_int_default(users_obj.get("totalCount"), default=0)
+        if count <= 0:
+            continue
+        content = _as_optional_str(group.get("content")) or ""
+        emoji = _reaction_emoji(content)
+        if emoji:
+            parts.append(f"{emoji} x{count}")
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
+def _reaction_emoji(content: str) -> str:
+    mapping = {
+        "THUMBS_UP": "👍",
+        "THUMBS_DOWN": "👎",
+        "LAUGH": "😄",
+        "HOORAY": "🎉",
+        "CONFUSED": "😕",
+        "HEART": "❤️",
+        "ROCKET": "🚀",
+        "EYES": "👀",
+    }
+    return mapping.get(content, "")
