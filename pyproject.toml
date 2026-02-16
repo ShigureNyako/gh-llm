@@ -1,5 +1,5 @@
 [project]
-name = "moelib"
+name = "gh-llm"
 version = "0.1.0"
 description = ""
 readme = "README.md"
@@ -23,13 +23,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ShigureLab/moelib"
-Documentation = "https://github.com/ShigureLab/moelib"
-Repository = "https://github.com/ShigureLab/moelib"
-Issues = "https://github.com/ShigureLab/moelib/issues"
+Homepage = "https://github.com/ShigureLab/gh-llm"
+Documentation = "https://github.com/ShigureLab/gh-llm"
+Repository = "https://github.com/ShigureLab/gh-llm"
+Issues = "https://github.com/ShigureLab/gh-llm/issues"
 
 [project.scripts]
-moelib = "moelib.__main__:main"
+gh-llm = "gh_llm.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -40,13 +40,13 @@ dev = [
 ]
 
 [tool.pyright]
-include = ["src/moelib", "tests"]
-pythonVersion = "3.10"
+include = ["src/gh_llm", "tests"]
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
@@ -95,7 +95,7 @@ future-annotations = true
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
-known-first-party = ["moelib"]
+known-first-party = ["gh_llm"]
 combine-as-imports = true
 
 [build-system]
