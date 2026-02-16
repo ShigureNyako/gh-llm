@@ -23,6 +23,7 @@ class FakeCompletedProcess:
 class GhResponder:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.pending_review_id: str | None = None
 
     def run(self, cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
         del check, capture_output, text
@@ -42,6 +43,22 @@ class GhResponder:
                         "reactionGroups": [{"content": "ROCKET", "users": {"totalCount": 1}}],
                     }
                 )
+            )
+
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/test_file.py b/python/test_file.py",
+                        "index 1111111..2222222 100644",
+                        "--- a/python/test_file.py",
+                        "+++ b/python/test_file.py",
+                        "@@ -20,2 +20,2 @@ def demo():",
+                        "-old_api_call()",
+                        "+new_api_call()",
+                    ]
+                )
+                + "\n"
             )
 
         if cmd[:3] == ["gh", "issue", "view"]:
@@ -85,6 +102,94 @@ class GhResponder:
                         "data": {
                             "addPullRequestReviewThreadReply": {
                                 "comment": {"id": "PRRC_reply_1"}
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "addPullRequestReviewThread(input:" in query:
+            self.pending_review_id = "PRR_pending_1"
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "addPullRequestReviewThread": {
+                                "thread": {
+                                    "id": "PRRT_new_1",
+                                    "comments": {"nodes": [{"id": "PRRC_new_1"}]},
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "addPullRequestReview(input:" in query:
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "addPullRequestReview": {
+                                "pullRequestReview": {
+                                    "id": "PRR_new_1",
+                                    "state": "PENDING",
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "reviews(last:50)" in query:
+            nodes: list[dict[str, Any]] = []
+            if self.pending_review_id is not None:
+                nodes.append(
+                    {
+                        "id": self.pending_review_id,
+                        "state": "PENDING",
+                        "author": {"login": "ShigureNyako"},
+                    }
+                )
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {"reviews": {"nodes": nodes}}
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "submitPullRequestReview(input:" in query:
+            review_id = self.pending_review_id or "PRR_pending_1"
+            self.pending_review_id = None
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "submitPullRequestReview": {
+                                "pullRequestReview": {
+                                    "id": review_id,
+                                    "state": "COMMENTED",
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "pullRequest(number:$number){" in query and "id" in query and "timelineItems" not in query:
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "pullRequest": {
+                                    "id": "PR_kwDOA-qtos5xxxx",
+                                }
                             }
                         }
                     }
@@ -417,6 +522,94 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## Timeline Event 1" in out
     assert "ISSUE_END_MARKER" in out
+
+
+def test_pr_review_actions_for_llm_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Review Start" in out
+    assert "Total hunks: 1" in out
+    assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
+    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 20 --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 20 --side RIGHT" in out
+    assert "@@ -20,2 +20,2 @@ def demo():" in out
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please simplify",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "thread: PRRT_new_1" in out
+    assert "comment: PRRC_new_1" in out
+    assert "status: commented" in out
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body",
+            "nits",
+            "--suggestion",
+            "new_api_call()",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: suggested" in out
+
+    code = cli.run(
+        [
+            "pr",
+            "review-submit",
+            "--event",
+            "REQUEST_CHANGES",
+            "--body",
+            "please address comments",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "review: PRR_pending_1" in out
+    assert "state: COMMENTED" in out
+    assert "status: submitted" in out
 
 
 def test_graphql_eof_retries_with_backoff(

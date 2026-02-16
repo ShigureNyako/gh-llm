@@ -405,6 +405,67 @@ query($owner:String!,$name:String!,$number:Int!){
 }
 """.strip()
 
+PR_NODE_ID_QUERY = """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      id
+    }
+  }
+}
+""".strip()
+
+ADD_PULL_REQUEST_REVIEW_QUERY = """
+mutation($pullRequestId:ID!,$event:PullRequestReviewEvent!,$body:String){
+  addPullRequestReview(input:{pullRequestId:$pullRequestId,event:$event,body:$body}){
+    pullRequestReview{
+      id
+      state
+    }
+  }
+}
+""".strip()
+
+PENDING_REVIEWS_QUERY = """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      reviews(last:50){
+        nodes{
+          id
+          state
+          author{login}
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+SUBMIT_PULL_REQUEST_REVIEW_QUERY = """
+mutation($id:ID!,$event:PullRequestReviewEvent!,$body:String){
+  submitPullRequestReview(input:{pullRequestReviewId:$id,event:$event,body:$body}){
+    pullRequestReview{
+      id
+      state
+    }
+  }
+}
+""".strip()
+
+ADD_PULL_REQUEST_REVIEW_THREAD_QUERY = """
+mutation($pullRequestId:ID!,$path:String!,$line:Int!,$side:DiffSide!,$body:String!){
+  addPullRequestReviewThread(input:{pullRequestId:$pullRequestId,path:$path,line:$line,side:$side,body:$body}){
+    thread{
+      id
+      comments(first:1){
+        nodes{id}
+      }
+    }
+  }
+}
+""".strip()
+
 
 class GitHubClient:
     def __init__(self) -> None:
@@ -798,6 +859,125 @@ mutation($id:ID!,$body:String!){
                 )
         return items
 
+    def fetch_pr_diff(self, selector: str | None, repo: str | None) -> str:
+        cmd = ["gh", "pr", "diff"]
+        if selector:
+            cmd.append(selector)
+        if repo:
+            cmd.extend(["--repo", repo])
+        return _run_command_text(cmd)
+
+    def submit_pull_request_review(
+        self,
+        *,
+        ref: PullRequestRef,
+        event: str,
+        body: str | None = None,
+    ) -> tuple[str, str]:
+        pending_review_id = self._find_pending_review_id(ref)
+        if pending_review_id is not None:
+            payload = _run_graphql_payload_any(
+                SUBMIT_PULL_REQUEST_REVIEW_QUERY,
+                {
+                    "id": pending_review_id,
+                    "event": event,
+                    "body": body or "",
+                },
+            )
+            data_obj = _as_dict(payload.get("data"), context="graphql data")
+            submitted_obj = _as_dict(
+                data_obj.get("submitPullRequestReview"), context="submitPullRequestReview"
+            )
+            review_obj = _as_dict(submitted_obj.get("pullRequestReview"), context="pullRequestReview")
+            review_id = _as_optional_str(review_obj.get("id")) or ""
+            review_state = _as_optional_str(review_obj.get("state")) or ""
+            if not review_id:
+                raise RuntimeError("failed to submit pending pull request review")
+            return review_id, review_state
+
+        pr_id = self._resolve_pull_request_node_id(ref)
+        variables: dict[str, object] = {"pullRequestId": pr_id, "event": event}
+        if body is not None:
+            variables["body"] = body
+        review_payload = _run_graphql_payload_any(ADD_PULL_REQUEST_REVIEW_QUERY, variables)
+        review_data_obj = _as_dict(review_payload.get("data"), context="graphql data")
+        added_obj = _as_dict(review_data_obj.get("addPullRequestReview"), context="addPullRequestReview")
+        review_obj = _as_dict(added_obj.get("pullRequestReview"), context="pullRequestReview")
+        review_id = _as_optional_str(review_obj.get("id")) or ""
+        review_state = _as_optional_str(review_obj.get("state")) or ""
+        if not review_id:
+            raise RuntimeError("failed to create pull request review")
+        return review_id, review_state
+
+    def _find_pending_review_id(self, ref: PullRequestRef) -> str | None:
+        viewer = self._viewer_login
+        if viewer is None:
+            viewer = self._get_viewer_login()
+            self._viewer_login = viewer
+        payload = _run_graphql_payload(
+            PENDING_REVIEWS_QUERY,
+            {"owner": ref.owner, "name": ref.name, "number": ref.number},
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        pr_obj = _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+        reviews_obj = _as_dict(pr_obj.get("reviews"), context="reviews")
+        for raw in _as_list(reviews_obj.get("nodes")):
+            review = _as_dict(raw, context="review")
+            state = _as_optional_str(review.get("state")) or ""
+            author_login = _get_login(review.get("author"))
+            review_id = _as_optional_str(review.get("id")) or ""
+            if state == "PENDING" and author_login == viewer and review_id:
+                return review_id
+        return None
+
+    def add_pull_request_review_thread_comment(
+        self,
+        *,
+        ref: PullRequestRef,
+        path: str,
+        line: int,
+        side: str,
+        body: str,
+    ) -> tuple[str, str]:
+        pr_id = self._resolve_pull_request_node_id(ref)
+        payload = _run_graphql_payload_any(
+            ADD_PULL_REQUEST_REVIEW_THREAD_QUERY,
+            {
+                "pullRequestId": pr_id,
+                "path": path,
+                "line": line,
+                "side": side,
+                "body": body,
+            },
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        added_obj = _as_dict(data_obj.get("addPullRequestReviewThread"), context="addPullRequestReviewThread")
+        thread_obj = _as_dict(added_obj.get("thread"), context="thread")
+        thread_id = _as_optional_str(thread_obj.get("id")) or ""
+        comments_obj = _as_dict(thread_obj.get("comments"), context="thread comments")
+        comment_nodes = _as_list(comments_obj.get("nodes"))
+        comment_id = ""
+        if comment_nodes:
+            first = _as_dict(comment_nodes[0], context="thread comment")
+            comment_id = _as_optional_str(first.get("id")) or ""
+        if not thread_id:
+            raise RuntimeError("failed to create review thread comment")
+        return thread_id, comment_id
+
+    def _resolve_pull_request_node_id(self, ref: PullRequestRef) -> str:
+        payload = _run_graphql_payload(
+            PR_NODE_ID_QUERY,
+            {"owner": ref.owner, "name": ref.name, "number": ref.number},
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        pr_obj = _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+        pr_id = _as_optional_str(pr_obj.get("id")) or ""
+        if not pr_id:
+            raise RuntimeError("failed to resolve pull request node id")
+        return pr_id
+
 def _run_graphql_connection(
     query: str, variables: dict[str, str | int], *, subject_key: str = "pullRequest"
 ) -> dict[str, object]:
@@ -812,6 +992,21 @@ def _run_graphql_payload(query: str, variables: dict[str, str | int]) -> dict[st
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         cmd.extend(["-F", f"{key}={value}"])
+    return _run_command_json(
+        cmd,
+        max_attempts=GRAPHQL_MAX_ATTEMPTS,
+        backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+        backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+    )
+
+
+def _run_graphql_payload_any(query: str, variables: dict[str, object]) -> dict[str, object]:
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        if isinstance(value, (dict, list)):
+            cmd.extend(["-F", f"{key}={json.dumps(value, ensure_ascii=False)}"])
+        else:
+            cmd.extend(["-F", f"{key}={value}"])
     return _run_command_json(
         cmd,
         max_attempts=GRAPHQL_MAX_ATTEMPTS,
@@ -844,6 +1039,27 @@ def _run_command_json(
         if delay > 0:
             time.sleep(delay)
 
+    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
+
+
+def _run_command_text(
+    cmd: list[str],
+    *,
+    max_attempts: int = 1,
+    backoff_base_seconds: float = 0.0,
+    backoff_max_seconds: float = 0.0,
+) -> str:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout
+        stderr = result.stderr.strip()
+        if attempt >= attempts or not _is_retryable_gh_error(stderr):
+            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+        delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
+        if delay > 0:
+            time.sleep(delay)
     raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
 
 

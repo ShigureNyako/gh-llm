@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from gh_llm.github_api import GitHubClient
@@ -100,6 +101,60 @@ def register_pr_parser(subparsers: Any) -> None:
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_pr_comment_edit)
+
+    review_start_parser = pr_subparsers.add_parser(
+        "review-start",
+        help="show review-oriented diff hunks and ready-to-run comment/suggestion commands",
+    )
+    review_start_parser.add_argument("--pr", help="PR number/url/branch")
+    review_start_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    review_start_parser.add_argument("--max-hunks", type=int, default=40, help="maximum hunks to render")
+    review_start_parser.set_defaults(handler=cmd_pr_review_start)
+
+    review_comment_parser = pr_subparsers.add_parser(
+        "review-comment", help="add one inline review comment at a specific line"
+    )
+    review_comment_parser.add_argument("--path", required=True, help="file path in pull request")
+    review_comment_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
+    review_comment_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
+    review_comment_parser.add_argument("--body", required=True, help="review comment body")
+    review_comment_parser.add_argument("--pr", help="PR number/url/branch")
+    review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    review_comment_parser.set_defaults(handler=cmd_pr_review_comment)
+
+    review_suggest_parser = pr_subparsers.add_parser(
+        "review-suggest", help="add one inline review suggestion at a specific line"
+    )
+    review_suggest_parser.add_argument("--path", required=True, help="file path in pull request")
+    review_suggest_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
+    review_suggest_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
+    review_suggest_parser.add_argument(
+        "--body",
+        default="Suggested change",
+        help="review comment body before suggestion block",
+    )
+    review_suggest_parser.add_argument(
+        "--suggestion",
+        required=True,
+        help="replacement content inserted inside ```suggestion block",
+    )
+    review_suggest_parser.add_argument("--pr", help="PR number/url/branch")
+    review_suggest_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    review_suggest_parser.set_defaults(handler=cmd_pr_review_suggest)
+
+    review_submit_parser = pr_subparsers.add_parser(
+        "review-submit", help="submit a top-level PR review (approve/request changes/comment)"
+    )
+    review_submit_parser.add_argument(
+        "--event",
+        choices=["COMMENT", "APPROVE", "REQUEST_CHANGES"],
+        default="COMMENT",
+        help="review event type",
+    )
+    review_submit_parser.add_argument("--body", default="", help="review summary body")
+    review_submit_parser.add_argument("--pr", help="PR number/url/branch")
+    review_submit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    review_submit_parser.set_defaults(handler=cmd_pr_review_submit)
 
 
 def cmd_pr_view(args: Any) -> int:
@@ -306,6 +361,109 @@ def cmd_pr_comment_edit(args: Any) -> int:
     return 0
 
 
+def cmd_pr_review_start(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
+    hunks = _extract_diff_hunks(diff)
+    max_hunks = max(1, int(args.max_hunks))
+    visible = hunks[:max_hunks]
+    hidden = len(hunks) - len(visible)
+    repo = f"{meta.ref.owner}/{meta.ref.name}"
+
+    print("## Review Start")
+    print(f"PR: {meta.ref.number} ({repo})")
+    print(f"Total hunks: {len(hunks)}")
+    print(f"Δ full diff: `gh pr diff {meta.ref.number} --repo {repo}`")
+    print(
+        "Comment template: `gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' "
+        f"--pr {meta.ref.number} --repo {repo}`"
+    )
+    print(
+        "Suggestion template: `gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT "
+        "--body '<reason>' --suggestion '<replacement>' "
+        f"--pr {meta.ref.number} --repo {repo}`"
+    )
+    print()
+
+    if not visible:
+        print("(no diff hunks found)")
+        return 0
+
+    for idx, hunk in enumerate(visible, start=1):
+        print(f"### Hunk {idx}")
+        print(f"File: {hunk.path}")
+        print(f"Header: {hunk.header}")
+        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")
+        print(
+            f"⏎ comment: `gh-llm pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}`"
+        )
+        print(
+            f"⏎ suggest: `gh-llm pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}`"
+        )
+        print("```diff")
+        for line in hunk.lines:
+            print(line)
+        print("```")
+        print()
+
+    if hidden > 0:
+        print(f"... {hidden} hunks hidden by --max-hunks")
+    return 0
+
+
+def cmd_pr_review_comment(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    thread_id, comment_id = client.add_pull_request_review_thread_comment(
+        ref=meta.ref,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+        body=str(args.body),
+    )
+    print(f"thread: {thread_id}")
+    if comment_id:
+        print(f"comment: {comment_id}")
+    print("status: commented")
+    return 0
+
+
+def cmd_pr_review_suggest(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    suggestion = str(args.suggestion).rstrip("\n")
+    full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
+    thread_id, comment_id = client.add_pull_request_review_thread_comment(
+        ref=meta.ref,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+        body=full_body,
+    )
+    print(f"thread: {thread_id}")
+    if comment_id:
+        print(f"comment: {comment_id}")
+    print("status: suggested")
+    return 0
+
+
+def cmd_pr_review_submit(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    body = str(args.body)
+    review_id, review_state = client.submit_pull_request_review(
+        ref=meta.ref,
+        event=str(args.event),
+        body=body if body else None,
+    )
+    print(f"review: {review_id}")
+    if review_state:
+        print(f"state: {review_state}")
+    print("status: submitted")
+    return 0
+
+
 def _resolve_context_and_meta(
     *, client: GitHubClient, pager: TimelinePager, args: Any
 ) -> tuple[TimelineContext, PullRequestMeta]:
@@ -318,6 +476,90 @@ def _resolve_context_and_meta(
     meta = client.resolve_pull_request(selector=selector, repo=repo)
     context, _, _ = pager.build_initial(meta=meta, page_size=effective_page_size)
     return context, meta
+
+
+def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
+    selector = getattr(args, "pr", None)
+    repo = getattr(args, "repo", None)
+    if repo is not None and selector is None:
+        raise RuntimeError("`--pr` is required when `--repo` is provided")
+    return client.resolve_pull_request(selector=selector, repo=repo)
+
+
+class _DiffHunk:
+    def __init__(self, path: str, header: str, anchor_line: int, lines: list[str]) -> None:
+        self.path = path
+        self.header = header
+        self.anchor_line = anchor_line
+        self.lines = lines
+
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
+
+
+def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
+    hunks: list[_DiffHunk] = []
+    current_path = ""
+    current_hunk_header = ""
+    current_hunk_lines: list[str] = []
+    current_new_line = 0
+    current_anchor = 0
+
+    def flush() -> None:
+        nonlocal current_hunk_header, current_hunk_lines, current_anchor
+        if current_path and current_hunk_header and current_hunk_lines:
+            hunks.append(
+                _DiffHunk(
+                    path=current_path,
+                    header=current_hunk_header,
+                    anchor_line=current_anchor if current_anchor > 0 else 1,
+                    lines=current_hunk_lines.copy(),
+                )
+            )
+        current_hunk_header = ""
+        current_hunk_lines = []
+        current_anchor = 0
+
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            flush()
+            continue
+        if raw.startswith("--- a/"):
+            flush()
+            continue
+        if raw.startswith("+++ b/"):
+            flush()
+            current_path = raw[len("+++ b/") :]
+            continue
+
+        if raw.startswith("@@ "):
+            flush()
+            current_hunk_header = raw
+            current_hunk_lines = [raw]
+            match = _HUNK_HEADER_RE.match(raw)
+            if match is None:
+                current_new_line = 1
+                current_anchor = 1
+            else:
+                current_new_line = int(match.group("new"))
+                current_anchor = current_new_line
+            continue
+
+        if not current_hunk_header:
+            continue
+
+        current_hunk_lines.append(raw)
+        if raw.startswith("+"):
+            if current_anchor <= 0:
+                current_anchor = current_new_line
+            current_new_line += 1
+        elif raw.startswith(" "):
+            current_new_line += 1
+        elif raw.startswith("-"):
+            continue
+
+    flush()
+    return hunks
 
 
 def parse_event_indexes(raw_indexes: list[str]) -> list[int]:
