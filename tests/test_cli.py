@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
@@ -301,6 +302,66 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "END_MARKER" in out
 
 
+def test_web_like_extra_timeline_events_are_rendered(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
+
+    code = cli.run(["pr", "timeline-expand", "4", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "reference" in out
+    assert 'PR #77887 "Test referenced PR" by @alice' in out
+    assert "gh-llm pr view 77887 --repo PaddlePaddle/Paddle" in out
+
+    code = cli.run(["pr", "timeline-expand", "5", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "cross-reference" in out
+    assert "cross-reference by @triager (Tri Ager)" in out
+    assert 'issue #12345 "Test issue" by @bob (Bob)' in out
+    assert "gh-llm issue view 12345 --repo PaddlePaddle/Paddle" in out
+
+    code = cli.run(["pr", "timeline-expand", "6", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "label/remove" in out
+    assert "push/force" in out
+
+
+def test_graphql_eof_retries_with_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    state = {"failed_once": False}
+
+    def flaky_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and not state["failed_once"]:
+            state["failed_once"] = True
+            return FakeCompletedProcess("", returncode=1, stderr='Post "https://api.github.com/graphql": EOF')
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(github_api.subprocess, "run", flaky_run)
+    monkeypatch.setattr(github_api.time, "sleep", no_sleep)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Timeline Page 1/4" in out
+    assert state["failed_once"] is True
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -473,7 +534,7 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
     }
 
 
-def _events() -> list[dict[str, Any]]:
+def _base_events() -> list[dict[str, Any]]:
     long_comment = ("LONG_TEXT " * 220) + "END_MARKER"
     return [
         {
@@ -536,6 +597,68 @@ def _events() -> list[dict[str, Any]]:
             "reactionGroups": [],
         },
     ]
+
+
+def _events_with_web_like_extras() -> list[dict[str, Any]]:
+    base = _base_events()
+    return [
+        *base,
+        {
+            "__typename": "ReferencedEvent",
+            "id": "r1",
+            "createdAt": "2026-02-14T15:12:00Z",
+            "actor": {"login": "other"},
+            "isCrossRepository": False,
+            "subject": {
+                "__typename": "PullRequest",
+                "number": 77887,
+                "title": "Test referenced PR",
+                "author": {"login": "alice", "name": "Alice"},
+                "repository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+            },
+        },
+        {
+            "__typename": "CrossReferencedEvent",
+            "id": "cr1",
+            "createdAt": "2026-02-14T15:12:45Z",
+            "actor": {"login": "triager", "name": "Tri Ager"},
+            "isCrossRepository": False,
+            "source": {
+                "__typename": "Issue",
+                "number": 12345,
+                "title": "Test issue",
+                "author": {"login": "bob", "name": "Bob"},
+                "repository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+            },
+        },
+        {
+            "__typename": "LabeledEvent",
+            "id": "l1",
+            "createdAt": "2026-02-14T15:13:00Z",
+            "actor": {"login": "triager"},
+            "label": {"name": "kind/docs"},
+        },
+        {
+            "__typename": "UnlabeledEvent",
+            "id": "u1",
+            "createdAt": "2026-02-14T15:14:00Z",
+            "actor": {"login": "triager"},
+            "label": {"name": "needs-review"},
+        },
+        {
+            "__typename": "HeadRefForcePushedEvent",
+            "id": "f1",
+            "createdAt": "2026-02-14T15:15:00Z",
+            "actor": {"login": "author1"},
+            "ref": {"name": "feature-branch"},
+            "beforeCommit": {"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+            "afterCommit": {"oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        },
+    ]
+
+
+def _events() -> list[dict[str, Any]]:
+    return _base_events()
 
 
 TEST_BASE_PAGE_SIZE = 2

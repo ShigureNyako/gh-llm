@@ -133,7 +133,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
         )
     if event.is_truncated:
         lines.append(f"   ⏎ run `gh-llm pr event {index}` for full content")
-    if event.kind == "commit":
+    if event.kind == "push/commit":
         lines.append(
             f"   Δ commit diff: `gh api repos/{context.owner}/{context.name}/commits/{event.source_id} -H 'Accept: application/vnd.github.v3.diff'`"
         )

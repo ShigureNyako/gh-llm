@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from urllib.parse import urlparse
@@ -10,11 +12,27 @@ from gh_llm.models import PageInfo, PullRequestMeta, PullRequestRef, TimelineEve
 
 MAX_INLINE_TEXT = 8000
 MAX_INLINE_LINES = 200
+GRAPHQL_MAX_ATTEMPTS = 4
+GRAPHQL_BACKOFF_BASE_SECONDS = 0.25
+GRAPHQL_BACKOFF_MAX_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class ReferenceSubject:
+    type: str
+    number: int
+    repo: str
+    detail: str
 
 TIMELINE_ITEM_TYPES = (
     "ISSUE_COMMENT",
     "PULL_REQUEST_REVIEW",
     "PULL_REQUEST_COMMIT",
+    "CROSS_REFERENCED_EVENT",
+    "REFERENCED_EVENT",
+    "LABELED_EVENT",
+    "UNLABELED_EVENT",
+    "HEAD_REF_FORCE_PUSHED_EVENT",
     "MERGED_EVENT",
     "CLOSED_EVENT",
     "REOPENED_EVENT",
@@ -24,7 +42,7 @@ FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -34,7 +52,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             url
             createdAt
             body
-            author{login}
+            author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
           ... on PullRequestReview{
@@ -42,12 +60,64 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             submittedAt
             state
             body
-            author{login}
+            author{login ... on User{name}}
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
-          ... on MergedEvent{ id createdAt actor{login} }
-          ... on ClosedEvent{ id createdAt actor{login} }
-          ... on ReopenedEvent{ id createdAt actor{login} }
+          ... on CrossReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            source{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on ReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            subject{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on HeadRefForcePushedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            ref{name}
+            beforeCommit{oid}
+            afterCommit{oid}
+          }
+          ... on MergedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
       }
     }
@@ -59,7 +129,7 @@ BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -69,7 +139,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             url
             createdAt
             body
-            author{login}
+            author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
           ... on PullRequestReview{
@@ -77,12 +147,64 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             submittedAt
             state
             body
-            author{login}
+            author{login ... on User{name}}
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
-          ... on MergedEvent{ id createdAt actor{login} }
-          ... on ClosedEvent{ id createdAt actor{login} }
-          ... on ReopenedEvent{ id createdAt actor{login} }
+          ... on CrossReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            source{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on ReferencedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            subject{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
+          ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on HeadRefForcePushedEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            ref{name}
+            beforeCommit{oid}
+            afterCommit{oid}
+          }
+          ... on MergedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
+          ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
       }
     }
@@ -110,7 +232,7 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
               originalStartLine
               diffHunk
               createdAt
-              author{login}
+              author{login ... on User{name}}
               reactionGroups{content users{totalCount}}
               pullRequestReview{id}
             }
@@ -398,18 +520,39 @@ def _run_graphql_payload(query: str, variables: dict[str, str | int]) -> dict[st
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         cmd.extend(["-F", f"{key}={value}"])
-    return _run_command_json(cmd)
+    return _run_command_json(
+        cmd,
+        max_attempts=GRAPHQL_MAX_ATTEMPTS,
+        backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+        backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+    )
 
 
-def _run_command_json(cmd: list[str]) -> dict[str, object]:
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or f"command failed: {' '.join(cmd)}")
-    parsed: object = json.loads(result.stdout)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("unexpected non-object JSON response")
-    raw = cast("dict[object, object]", parsed)
-    return {str(k): v for k, v in raw.items()}
+def _run_command_json(
+    cmd: list[str],
+    *,
+    max_attempts: int = 1,
+    backoff_base_seconds: float = 0.0,
+    backoff_max_seconds: float = 0.0,
+) -> dict[str, object]:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode == 0:
+            parsed: object = json.loads(result.stdout)
+            if not isinstance(parsed, dict):
+                raise RuntimeError("unexpected non-object JSON response")
+            raw = cast("dict[object, object]", parsed)
+            return {str(k): v for k, v in raw.items()}
+
+        stderr = result.stderr.strip()
+        if attempt >= attempts or not _is_retryable_gh_error(stderr):
+            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+        delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
+        if delay > 0:
+            time.sleep(delay)
+
+    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
 
 
 def _parse_timeline_page(
@@ -460,7 +603,7 @@ def _parse_node(
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
             kind="comment",
-            actor=_get_login(node.get("author")),
+            actor=_get_actor_display(node.get("author")),
             summary=summary,
             source_id=_as_optional_str(node.get("id")) or "comment",
             full_text=body,
@@ -486,7 +629,7 @@ def _parse_node(
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("submittedAt"))),
             kind=f"review/{state.lower()}",
-            actor=_get_login(node.get("author")),
+            actor=_get_actor_display(node.get("author")),
             summary=summary,
             source_id=review_id,
             full_text=full_review,
@@ -503,12 +646,121 @@ def _parse_node(
         summary, is_truncated = _clip_text(message, "(empty commit message)")
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(commit.get("committedDate"))),
-            kind="commit",
+            kind="push/commit",
             actor=actor,
             summary=summary,
             source_id=oid,
             full_text=full_message or message,
             is_truncated=is_truncated,
+        )
+
+    if typename == "ReferencedEvent":
+        source = _as_dict_optional(node.get("subject"))
+        subject = _reference_subject_summary(source)
+
+        is_cross = bool(node.get("isCrossRepository"))
+        actor = _get_actor_display(node.get("actor"))
+        summary_lines: list[str] = []
+        if subject is not None and subject.type == "PullRequest":
+            source_number = subject.number
+            source_repo = subject.repo
+            detail = subject.detail
+            summary_lines.append(f"referenced by PR #{source_number} {detail} ({source_repo})")
+            summary_lines.append(
+                f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`"
+            )
+        elif subject is not None and subject.type == "Issue":
+            source_number = subject.number
+            source_repo = subject.repo
+            detail = subject.detail
+            summary_lines.append(f"referenced by issue #{source_number} {detail} ({source_repo})")
+            summary_lines.append(
+                f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`"
+            )
+        else:
+            summary_lines.append("referenced by another item")
+        if is_cross:
+            summary_lines.append("cross-repository reference")
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="reference",
+            actor=actor,
+            summary="\n".join(summary_lines),
+            source_id=_as_optional_str(node.get("id")) or "referenced",
+        )
+
+    if typename == "CrossReferencedEvent":
+        source = _as_dict_optional(node.get("source"))
+        subject = _reference_subject_summary(source)
+
+        is_cross = bool(node.get("isCrossRepository"))
+        actor = _get_actor_display(node.get("actor"))
+        summary_lines: list[str] = []
+        if subject is not None and subject.type == "PullRequest":
+            source_number = subject.number
+            source_repo = subject.repo
+            detail = subject.detail
+            summary_lines.append(f"cross-referenced by PR #{source_number} {detail} ({source_repo})")
+            summary_lines.append(
+                f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`"
+            )
+        elif subject is not None and subject.type == "Issue":
+            source_number = subject.number
+            source_repo = subject.repo
+            detail = subject.detail
+            summary_lines.append(f"cross-referenced by issue #{source_number} {detail} ({source_repo})")
+            summary_lines.append(
+                f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`"
+            )
+        else:
+            summary_lines.append("cross-referenced by another item")
+        if is_cross:
+            summary_lines.append("cross-repository reference")
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="cross-reference",
+            actor=actor,
+            summary="\n".join(summary_lines),
+            source_id=_as_optional_str(node.get("id")) or "cross-referenced",
+        )
+
+    if typename == "LabeledEvent":
+        label_obj = _as_dict_optional(node.get("label"))
+        label_name = _as_optional_str(label_obj.get("name")) if label_obj is not None else None
+        label = label_name or "(unknown label)"
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="label/add",
+            actor=_get_actor_display(node.get("actor")),
+            summary=f"added label `{label}`",
+            source_id=_as_optional_str(node.get("id")) or "label/add",
+        )
+
+    if typename == "UnlabeledEvent":
+        label_obj = _as_dict_optional(node.get("label"))
+        label_name = _as_optional_str(label_obj.get("name")) if label_obj is not None else None
+        label = label_name or "(unknown label)"
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="label/remove",
+            actor=_get_actor_display(node.get("actor")),
+            summary=f"removed label `{label}`",
+            source_id=_as_optional_str(node.get("id")) or "label/remove",
+        )
+
+    if typename == "HeadRefForcePushedEvent":
+        before_obj = _as_dict_optional(node.get("beforeCommit"))
+        after_obj = _as_dict_optional(node.get("afterCommit"))
+        ref_obj = _as_dict_optional(node.get("ref"))
+        before = (_as_optional_str(before_obj.get("oid")) if before_obj is not None else "") or "unknown"
+        after = (_as_optional_str(after_obj.get("oid")) if after_obj is not None else "") or "unknown"
+        ref_name = (_as_optional_str(ref_obj.get("name")) if ref_obj is not None else "") or "unknown"
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="push/force",
+            actor=_get_actor_display(node.get("actor")),
+            summary=f"force-pushed `{ref_name}`\n{before[:7]} -> {after[:7]}",
+            source_id=_as_optional_str(node.get("id")) or "push/force",
         )
 
     if typename in {"MergedEvent", "ClosedEvent", "ReopenedEvent"}:
@@ -525,7 +777,7 @@ def _parse_node(
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
             kind=kind_map[typename],
-            actor=_get_login(node.get("actor")),
+            actor=_get_actor_display(node.get("actor")),
             summary=summary_map[typename],
             source_id=_as_optional_str(node.get("id")) or kind_map[typename],
         )
@@ -554,6 +806,19 @@ def _get_login(value: object) -> str:
         return "unknown"
     login = _as_optional_str(obj.get("login"))
     return login or "unknown"
+
+
+def _get_actor_display(value: object) -> str:
+    obj = _as_dict_optional(value)
+    if obj is None:
+        return "unknown"
+    login = _as_optional_str(obj.get("login")) or "unknown"
+    name = _as_optional_str(obj.get("name"))
+    if name:
+        normalized_name = name.strip()
+        if normalized_name and normalized_name != login:
+            return f"{login} ({normalized_name})"
+    return login
 
 
 def _parse_owner_repo(pr_url: str) -> tuple[str, str]:
@@ -692,7 +957,7 @@ def _render_review_comment_block(
 ) -> list[str]:
     path = _as_optional_str(comment.get("path")) or "(unknown path)"
     line = _as_line_ref(comment)
-    author = _get_login(comment.get("author"))
+    author = _get_actor_display(comment.get("author"))
     created_at = _as_optional_str(comment.get("createdAt")) or "unknown time"
     body = (_as_optional_str(comment.get("body")) or "").strip()
     diff_hunk = (_as_optional_str(comment.get("diffHunk")) or "").strip()
@@ -873,3 +1138,39 @@ def _reaction_emoji(content: str) -> str:
         "EYES": "👀",
     }
     return mapping.get(content, "")
+
+
+def _is_retryable_gh_error(stderr: str) -> bool:
+    lowered = stderr.lower()
+    retryable_patterns = (
+        "post \"https://api.github.com/graphql\": eof",
+        "eof",
+        "timeout",
+        "tls handshake timeout",
+        "connection reset",
+        "connection refused",
+        "temporary failure",
+    )
+    return any(pattern in lowered for pattern in retryable_patterns)
+
+
+def _reference_subject_summary(source: dict[str, object] | None) -> ReferenceSubject | None:
+    if source is None:
+        return None
+    source_type = _as_optional_str(source.get("__typename")) or ""
+    source_number = _as_int_default(source.get("number"), default=0)
+    if source_number <= 0:
+        return None
+    repo_obj = _as_dict_optional(source.get("repository"))
+    source_repo = _as_optional_str(repo_obj.get("nameWithOwner")) if repo_obj is not None else None
+    if not source_repo:
+        return None
+    title = (_as_optional_str(source.get("title")) or "").strip()
+    author = _get_actor_display(source.get("author"))
+    detail_parts: list[str] = []
+    if title:
+        detail_parts.append(f'"{title}"')
+    if author != "unknown":
+        detail_parts.append(f"by @{author}")
+    detail = " ".join(detail_parts).strip()
+    return ReferenceSubject(type=source_type, number=source_number, repo=source_repo, detail=detail)
