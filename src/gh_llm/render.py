@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 def render_header(context: TimelineContext) -> list[str]:
     description = context.body.strip() or "(no description)"
+    repo = f"{context.owner}/{context.name}"
     return [
         "---",
         f"pr: {context.number}",
@@ -27,8 +28,13 @@ def render_header(context: TimelineContext) -> list[str]:
         f"total_pages: {context.total_pages}",
         "---",
         "",
-        "## PR Description",
+        "## Diff Actions",
+        f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
+        "",
+        "## PR Description (Raw Markdown)",
+        "<pr_description>",
         *description.splitlines(),
+        "</pr_description>",
         "",
     ]
 
@@ -54,6 +60,18 @@ def render_expand_hints(context: TimelineContext, shown_pages: set[int]) -> list
     return []
 
 
+def render_pr_actions(context: TimelineContext) -> list[str]:
+    repo = f"{context.owner}/{context.name}"
+    return [
+        "",
+        "---",
+        "PR actions:",
+        "⌨ comment_body: '<comment>'",
+        f"⏎ Comment via gh-llm: `gh-llm pr comment --body '<comment>' --pr {context.number} --repo {repo}`",
+        "---",
+    ]
+
+
 def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list[str]:
     if not hidden_pages:
         return []
@@ -68,7 +86,7 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
         hidden_label,
         *[
             _render_template(
-                t"- `gh-llm pr timeline-expand {page} --pr {context.number} --repo {repo}`"
+                t"- ⏎ `gh-llm pr timeline-expand {page} --pr {context.number} --repo {repo}`"
             )
             for page in hidden_pages
         ],
@@ -79,15 +97,23 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
 def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> list[str]:
     timestamp = event.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     lines = [f"{index}. [{timestamp}] {event.kind} by @{event.actor}"]
-    lines.extend(_indent_block(event.summary))
+    if event.kind == "comment":
+        lines.append("   Comment:")
+        lines.extend(_indented_tag_block("comment", event.summary, indent="   "))
+    else:
+        lines.extend(_indent_block(event.summary))
     if event.resolved_hidden_count > 0:
         repo = f"{context.owner}/{context.name}"
         lines.append(
             f"   {event.resolved_hidden_count} resolved review comments are collapsed; "
-            f"run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
+            f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
         )
     if event.is_truncated:
-        lines.append(f"   run `gh-llm pr event {index}` for full content")
+        lines.append(f"   ⏎ run `gh-llm pr event {index}` for full content")
+    if event.kind == "commit":
+        lines.append(
+            f"   Δ commit diff: `gh api repos/{context.owner}/{context.name}/commits/{event.source_id} -H 'Accept: application/vnd.github.v3.diff'`"
+        )
     return lines
 
 
@@ -116,10 +142,21 @@ def render_event_detail(index: int, event: TimelineEvent) -> list[str]:
         f"- Source ID: {event.source_id}",
         "",
     ]
-    lines.extend((event.full_text or event.summary).splitlines() or [event.summary])
+    detail = event.full_text or event.summary
+    if event.kind == "comment":
+        lines.extend(["<comment>", *detail.splitlines(), "</comment>"])
+    else:
+        lines.extend(detail.splitlines() or [event.summary])
     return lines
 
 
 def _indent_block(text: str) -> list[str]:
     content_lines = text.splitlines() or [text]
     return [f"   {line}" for line in content_lines]
+
+
+def _indented_tag_block(tag: str, content: str, indent: str = "") -> list[str]:
+    out = [f"{indent}<{tag}>"]
+    out.extend(f"{indent}{line}" for line in content.splitlines())
+    out.append(f"{indent}</{tag}>")
+    return out

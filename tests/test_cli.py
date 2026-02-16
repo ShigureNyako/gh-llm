@@ -42,6 +42,9 @@ class GhResponder:
                 )
             )
 
+        if cmd[:3] == ["gh", "pr", "comment"]:
+            return FakeCompletedProcess("https://github.com/PaddlePaddle/Paddle/pull/77928#issuecomment-1\n")
+
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -128,12 +131,16 @@ def test_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## PR Description" in out
     assert "This is PR description" in out
+    assert "## Diff Actions" in out
+    assert "Δ PR diff: `gh pr diff 77928 --repo PaddlePaddle/Paddle`" in out
     assert "## Timeline Page 1/4" in out
     assert "## Timeline Page 3/4" in out
     assert "## Timeline Page 4/4" in out
     assert "Hidden timeline page: 2" in out
     assert "---" in out
     assert "gh-llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
+    assert "PR actions:" in out
+    assert "gh-llm pr comment --body '<comment>' --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "link:" not in out
 
     pre_expand_calls = len(responder.calls)
@@ -145,6 +152,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## Timeline Page 2/4" in out
     assert "commit 2" in out
+    assert "Δ commit diff: `gh api repos/PaddlePaddle/Paddle/commits/oid-2 -H 'Accept: application/vnd.github.v3.diff'`" in out
 
     code = cli.run(
         ["pr", "timeline-expand", "3", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
@@ -157,10 +165,8 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "[1] python/test_file.py:L21 by @reviewer" in out
     assert "[2] python/test_file.py:L22 by @reviewer" not in out
     assert "Diff Hunk:" in out
-    assert (
-        "1 resolved review comments are collapsed; "
-        "run `gh-llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle`"
-    ) in out
+    assert "1 resolved review comments are collapsed;" in out
+    assert "gh-llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "thread_id: PRRT_mock_1" in out
     assert "Reply via gh-llm:" in out
     assert "Resolve via gh-llm:" in out
@@ -197,6 +203,22 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "thread: PRRT_mock_1" in out
     assert "reply_comment_id: PRRC_reply_1" in out
     assert "status: replied" in out
+
+    code = cli.run(
+        [
+            "pr",
+            "comment",
+            "--body",
+            "looks good",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: commented" in out
 
     code = cli.run(
         [

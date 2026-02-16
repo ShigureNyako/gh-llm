@@ -287,6 +287,18 @@ mutation($threadId:ID!){
         thread_obj = _as_dict(unresolved_obj.get("thread"), context="unresolved thread")
         return bool(thread_obj.get("isResolved"))
 
+    def comment_pull_request(self, selector: str | None, repo: str | None, body: str) -> str:
+        cmd = ["gh", "pr", "comment"]
+        if selector:
+            cmd.append(selector)
+        if repo:
+            cmd.extend(["--repo", repo])
+        cmd.extend(["--body", body])
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"command failed: {' '.join(cmd)}")
+        return result.stdout.strip()
+
 
 def _run_graphql_connection(query: str, variables: dict[str, str | int]) -> dict[str, object]:
     payload = _run_graphql_payload(query, variables)
@@ -555,17 +567,18 @@ def _render_review_thread_block(
                 include_diff_hunk=(comment_index == 1),
             )
         )
-    lines.append(f"  thread_id: {thread_id}")
+    lines.append(f"  🆔 thread_id: {thread_id}")
+    lines.append("  ⌨ reply_body: '<reply>'")
     lines.append(
-        f"  Reply via gh-llm: `gh-llm pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
+        f"  ⏎ Reply via gh-llm: `gh-llm pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
     )
     if is_resolved:
         lines.append(
-            f"  Unresolve via gh-llm: `gh-llm pr thread-unresolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
+            f"  ⏎ Unresolve via gh-llm: `gh-llm pr thread-unresolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
         )
     else:
         lines.append(
-            f"  Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
+            f"  ⏎ Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
         )
     return lines
 
