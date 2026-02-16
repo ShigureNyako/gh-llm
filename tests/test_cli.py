@@ -42,6 +42,9 @@ class GhResponder:
                 )
             )
 
+        if cmd[:3] == ["gh", "api", "user"]:
+            return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
+
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -62,6 +65,30 @@ class GhResponder:
                             "addPullRequestReviewThreadReply": {
                                 "comment": {"id": "PRRC_reply_1"}
                             }
+                        }
+                    }
+                )
+            )
+
+        if "updatePullRequestReviewComment" in query:
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "updatePullRequestReviewComment": {
+                                "pullRequestReviewComment": {"id": "PRRC_self_1"}
+                            }
+                        }
+                    }
+                )
+            )
+
+        if "updateIssueComment" in query:
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "updateIssueComment": {"issueComment": {"id": "c3"}}
                         }
                     }
                 )
@@ -144,6 +171,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-reviewer '<reviewer1>,<reviewer2>'" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-assignee '<assignee1>,<assignee2>'" in out
     assert "link:" not in out
+    assert "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`" in out
 
     pre_expand_calls = len(responder.calls)
     code = cli.run(
@@ -162,7 +190,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert code == 0
     out = capsys.readouterr().out
     assert "## Timeline Page 3/4" in out
-    assert "Review comments (1/2 shown):" in out
+    assert "Review comments (2/3 shown):" in out
     assert "Thread[1] PRRT_mock_1" in out
     assert "[1] python/test_file.py:L21 by @reviewer" in out
     assert "[2] python/test_file.py:L22 by @reviewer" not in out
@@ -173,6 +201,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "Reply via gh-llm:" in out
     assert "Resolve via gh-llm:" in out
     assert "Unresolve via gh-llm:" not in out
+    assert "Edit comment via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`" in out
     assert "Reply via gh: `gh api graphql" not in out
     assert "Resolve via gh: `gh api graphql" not in out
 
@@ -221,6 +250,24 @@ def test_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "thread: PRRT_mock_1" in out
     assert "status: resolved" in out
+
+    code = cli.run(
+        [
+            "pr",
+            "comment-edit",
+            "c3",
+            "--body",
+            "updated body",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "comment: c3" in out
+    assert "status: edited" in out
 
     code = cli.run(
         [
@@ -393,6 +440,19 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "createdAt": "2026-02-14T14:50:01Z",
                                             "author": {"login": "reviewer"},
                                             "pullRequestReview": {"id": "PRR_mock"},
+                                        },
+                                        {
+                                            "id": "PRRC_self_1",
+                                            "path": "python/test_file.py",
+                                            "body": "self reply",
+                                            "line": 23,
+                                            "originalLine": 23,
+                                            "startLine": None,
+                                            "originalStartLine": None,
+                                            "diffHunk": "@@ -23,1 +23,1 @@\n-old\n+new",
+                                            "createdAt": "2026-02-14T14:50:03Z",
+                                            "author": {"login": "ShigureNyako"},
+                                            "pullRequestReview": {"id": "PRR_mock"},
                                         }
                                     ]
                                 },
@@ -461,8 +521,8 @@ def _events() -> list[dict[str, Any]]:
             "id": "c3",
             "url": "https://example.com/c3",
             "createdAt": "2026-02-14T15:11:00Z",
-            "body": "tail event",
-            "author": {"login": "tail"},
+            "body": "self comment",
+            "author": {"login": "ShigureNyako"},
         },
     ]
 

@@ -44,6 +44,7 @@ class TimelineEvent:
     full_text: str | None = None
     is_truncated: bool = False
     resolved_hidden_count: int = 0
+    editable_comment_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -85,6 +85,15 @@ def register_pr_parser(subparsers: Any) -> None:
     thread_unresolve_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_unresolve_parser.set_defaults(handler=cmd_pr_thread_unresolve)
 
+    comment_edit_parser = pr_subparsers.add_parser(
+        "comment-edit", help="edit one issue/review comment by node id"
+    )
+    comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
+    comment_edit_parser.add_argument("--body", required=True, help="new comment body")
+    comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
+    comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    comment_edit_parser.set_defaults(handler=cmd_pr_comment_edit)
+
 
 def cmd_pr_view(args: Any) -> int:
     page_size = int(args.page_size)
@@ -252,6 +261,18 @@ def cmd_pr_thread_unresolve(args: Any) -> int:
     resolved = client.unresolve_review_thread(thread_id=str(args.thread_id))
     print(f"thread: {args.thread_id}")
     print(f"status: {'still_resolved' if resolved else 'unresolved'}")
+    return 0
+
+
+def cmd_pr_comment_edit(args: Any) -> int:
+    client = GitHubClient()
+    if args.repo is not None and args.pr is None:
+        raise RuntimeError("`--pr` is required when `--repo` is provided")
+    if args.pr is not None:
+        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
+    print(f"comment: {updated_comment_id}")
+    print("status: edited")
     return 0
 
 

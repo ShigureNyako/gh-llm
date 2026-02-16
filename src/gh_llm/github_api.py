@@ -111,6 +111,7 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
 class GitHubClient:
     def __init__(self) -> None:
         self._review_threads_cache: dict[tuple[str, str, int], dict[str, list[dict[str, object]]]] = {}
+        self._viewer_login: str | None = None
 
     def resolve_pull_request(self, selector: str | None, repo: str | None) -> PullRequestMeta:
         fields = ["number", "title", "url", "author", "state", "isDraft", "body", "updatedAt"]
@@ -133,6 +134,8 @@ class GitHubClient:
 
         owner, name = _parse_owner_repo(url)
         ref = PullRequestRef(owner=owner, name=name, number=number)
+        if self._viewer_login is None:
+            self._viewer_login = self._get_viewer_login()
         return PullRequestMeta(
             ref=ref,
             title=title,
@@ -163,6 +166,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            viewer_login=self._viewer_login or "",
         )
 
     def fetch_timeline_backward(
@@ -184,6 +188,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            viewer_login=self._viewer_login or "",
         )
 
     def _get_review_threads_by_review(self, ref: PullRequestRef) -> dict[str, list[dict[str, object]]]:
@@ -287,6 +292,71 @@ mutation($threadId:ID!){
         thread_obj = _as_dict(unresolved_obj.get("thread"), context="unresolved thread")
         return bool(thread_obj.get("isResolved"))
 
+    def edit_comment(self, comment_id: str, body: str) -> str:
+        if comment_id.startswith("PRRC_"):
+            updated_id = self._try_update_pull_request_review_comment(comment_id=comment_id, body=body)
+            if updated_id:
+                return updated_id
+            updated_id = self._try_update_issue_comment(comment_id=comment_id, body=body)
+            if updated_id:
+                return updated_id
+            raise RuntimeError("failed to edit review comment")
+
+        updated_id = self._try_update_issue_comment(comment_id=comment_id, body=body)
+        if updated_id:
+            return updated_id
+        updated_id = self._try_update_pull_request_review_comment(comment_id=comment_id, body=body)
+        if updated_id:
+            return updated_id
+        raise RuntimeError("failed to edit comment")
+
+    def _try_update_issue_comment(self, *, comment_id: str, body: str) -> str | None:
+        query = """
+mutation($id:ID!,$body:String!){
+  updateIssueComment(input:{id:$id,body:$body}){
+    issueComment{id}
+  }
+}
+""".strip()
+        payload = _run_graphql_payload(query, {"id": comment_id, "body": body})
+        if _has_graphql_errors(payload):
+            return None
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        updated_obj = _as_dict_optional(data_obj.get("updateIssueComment"))
+        if updated_obj is None:
+            return None
+        comment_obj = _as_dict_optional(updated_obj.get("issueComment"))
+        if comment_obj is None:
+            return None
+        updated_id = _as_optional_str(comment_obj.get("id"))
+        return updated_id or None
+
+    def _try_update_pull_request_review_comment(self, *, comment_id: str, body: str) -> str | None:
+        query = """
+mutation($id:ID!,$body:String!){
+  updatePullRequestReviewComment(input:{pullRequestReviewCommentId:$id,body:$body}){
+    pullRequestReviewComment{id}
+  }
+}
+""".strip()
+        payload = _run_graphql_payload(query, {"id": comment_id, "body": body})
+        if _has_graphql_errors(payload):
+            return None
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        updated_obj = _as_dict_optional(data_obj.get("updatePullRequestReviewComment"))
+        if updated_obj is None:
+            return None
+        comment_obj = _as_dict_optional(updated_obj.get("pullRequestReviewComment"))
+        if comment_obj is None:
+            return None
+        updated_id = _as_optional_str(comment_obj.get("id"))
+        return updated_id or None
+
+    def _get_viewer_login(self) -> str:
+        payload = _run_command_json(["gh", "api", "user"])
+        login = _as_optional_str(payload.get("login"))
+        return login or ""
+
 def _run_graphql_connection(query: str, variables: dict[str, str | int]) -> dict[str, object]:
     payload = _run_graphql_payload(query, variables)
     data_obj = _as_dict(payload.get("data"), context="graphql data")
@@ -319,6 +389,7 @@ def _parse_timeline_page(
     ref: PullRequestRef,
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    viewer_login: str,
 ) -> TimelinePage:
     total_count = _as_int_default(connection.get("totalCount"), default=0)
     page_info_obj = _as_dict(connection.get("pageInfo"), context="pageInfo")
@@ -336,6 +407,7 @@ def _parse_timeline_page(
             ref=ref,
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            viewer_login=viewer_login,
         )
         if parsed is not None:
             items.append(parsed)
@@ -350,6 +422,7 @@ def _parse_node(
     ref: PullRequestRef,
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    viewer_login: str,
 ) -> TimelineEvent | None:
     typename = str(node.get("__typename") or "")
     if typename == "IssueComment":
@@ -363,6 +436,9 @@ def _parse_node(
             source_id=_as_optional_str(node.get("id")) or "comment",
             full_text=body,
             is_truncated=is_truncated,
+            editable_comment_id=(
+                _as_optional_str(node.get("id")) if _get_login(node.get("author")) == viewer_login else None
+            ),
         )
 
     if typename == "PullRequestReview":
@@ -374,6 +450,7 @@ def _parse_node(
             state=state,
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
+            viewer_login=viewer_login,
         )
         summary, is_truncated = _clip_text(full_review, f"review state: {state.lower()}")
         return TimelineEvent(
@@ -490,6 +567,7 @@ def _build_review_text(
     *,
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
+    viewer_login: str,
 ) -> tuple[str, int]:
     body = (_as_optional_str(node.get("body")) or "").strip()
     total_count = sum(len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review)
@@ -513,6 +591,7 @@ def _build_review_text(
                 thread_index=rendered_thread_index,
                 comments=comment_nodes,
                 ref=ref,
+                viewer_login=viewer_login,
             )
         )
         rendered_comments += len(comment_nodes)
@@ -543,6 +622,7 @@ def _render_review_thread_block(
     thread_index: int,
     comments: list[object],
     ref: PullRequestRef,
+    viewer_login: str,
 ) -> list[str]:
     lines = [f"- Thread[{thread_index}] {thread_id}"]
     for comment_index, raw_comment in enumerate(comments, start=1):
@@ -552,6 +632,8 @@ def _render_review_thread_block(
                 comment=comment,
                 index=comment_index,
                 include_diff_hunk=(comment_index == 1),
+                ref=ref,
+                viewer_login=viewer_login,
             )
         )
     lines.append(f"  🆔 thread_id: {thread_id}")
@@ -571,7 +653,12 @@ def _render_review_thread_block(
 
 
 def _render_review_comment_block(
-    comment: dict[str, object], index: int, *, include_diff_hunk: bool = True
+    comment: dict[str, object],
+    index: int,
+    *,
+    include_diff_hunk: bool = True,
+    ref: PullRequestRef,
+    viewer_login: str,
 ) -> list[str]:
     path = _as_optional_str(comment.get("path")) or "(unknown path)"
     line = _as_line_ref(comment)
@@ -594,6 +681,13 @@ def _render_review_comment_block(
     if suggestion_diff:
         lines.append("  Suggested Change:")
         lines.extend(_indented_fenced_block("diff", suggestion_diff, indent="  "))
+    comment_id = _as_optional_str(comment.get("id")) or ""
+    if comment_id and author == viewer_login:
+        lines.append(f"  🆔 comment_id: {comment_id}")
+        lines.append("  ⌨ comment_body: '<comment_body>'")
+        lines.append(
+            f"  ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {comment_id} --body '<comment_body>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
+        )
 
     if not body and not diff_hunk:
         lines.append("  (empty review comment)")
@@ -706,3 +800,7 @@ def _as_int_default(value: object, *, default: int) -> int:
         except ValueError:
             return default
     return default
+
+
+def _has_graphql_errors(payload: dict[str, object]) -> bool:
+    return len(_as_list(payload.get("errors"))) > 0

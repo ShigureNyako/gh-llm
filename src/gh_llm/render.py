@@ -106,6 +106,12 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext) -> 
     if event.kind == "comment":
         lines.append("   Comment:")
         lines.extend(_indented_tag_block("comment", event.summary, indent="   "))
+        if event.editable_comment_id:
+            lines.append(f"   🆔 comment_id: {event.editable_comment_id}")
+            lines.append("   ⌨ comment_body: '<comment_body>'")
+            lines.append(
+                f"   ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {event.editable_comment_id} --body '<comment_body>' --pr {context.number} --repo {context.owner}/{context.name}`"
+            )
     else:
         lines.extend(_indent_block(event.summary))
     if event.resolved_hidden_count > 0:
