@@ -23,6 +23,7 @@ class TimelinePager:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        diff_hunk_lines: int | None = None,
     ) -> tuple[TimelineContext, TimelinePage, TimelinePage | None]:
         _validate_page_size(page_size)
 
@@ -32,6 +33,7 @@ class TimelinePager:
             after=None,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             kind=meta.kind,
         )
         total_count = first_page.total_count
@@ -71,6 +73,7 @@ class TimelinePager:
             before=None,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             kind=meta.kind,
         )
         self._remember_backward(context, page=total_pages, cursor_used=None, page_result=last_page)
@@ -84,6 +87,7 @@ class TimelinePager:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        diff_hunk_lines: int | None = None,
     ) -> TimelinePage:
         _validate_page(page, context.total_pages)
 
@@ -96,6 +100,7 @@ class TimelinePager:
                 page,
                 show_resolved_details=show_resolved_details,
                 show_minimized_details=show_minimized_details,
+                diff_hunk_lines=diff_hunk_lines,
             )
         return self._walk_backward(
             meta,
@@ -103,6 +108,7 @@ class TimelinePager:
             page,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
         )
 
     def _walk_forward(
@@ -113,6 +119,7 @@ class TimelinePager:
         *,
         show_resolved_details: bool,
         show_minimized_details: bool,
+        diff_hunk_lines: int | None,
     ) -> TimelinePage:
         start_page = max(page for page in context.forward_after_by_page if page <= target_page)
         cursor = context.forward_after_by_page[start_page]
@@ -125,6 +132,7 @@ class TimelinePager:
                 after=cursor,
                 show_resolved_details=show_resolved_details,
                 show_minimized_details=show_minimized_details,
+                diff_hunk_lines=diff_hunk_lines,
                 kind=meta.kind,
             )
             self._remember_forward(context, page=page, cursor_used=cursor, page_result=result)
@@ -143,6 +151,7 @@ class TimelinePager:
         *,
         show_resolved_details: bool,
         show_minimized_details: bool,
+        diff_hunk_lines: int | None,
     ) -> TimelinePage:
         start_page = min(page for page in context.backward_before_by_page if page >= target_page)
         cursor = context.backward_before_by_page[start_page]
@@ -161,6 +170,7 @@ class TimelinePager:
                 before=cursor,
                 show_resolved_details=show_resolved_details,
                 show_minimized_details=show_minimized_details,
+                diff_hunk_lines=diff_hunk_lines,
                 kind=meta.kind,
             )
             self._remember_backward(context, page=page, cursor_used=cursor, page_result=result)

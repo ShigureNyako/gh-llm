@@ -226,6 +226,12 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
             f"   {event.minimized_hidden_count} hidden review comments are collapsed{reason_suffix}; "
             f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
         )
+    if event.kind.startswith("review/"):
+        detail_text = (event.full_text or event.summary or "").lower()
+        if "diff hunk clipped" in detail_text:
+            lines.append(
+                f"   ⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {context.owner}/{context.name} --diff-hunk-lines 0` for full diff hunk context"
+            )
     if event.is_truncated:
         lines.append(
             f"   ⏎ run `gh-llm {command_group} event {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}` for full content"

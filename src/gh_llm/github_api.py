@@ -12,6 +12,7 @@ from gh_llm.models import CheckItem, PageInfo, PullRequestMeta, PullRequestRef, 
 
 MAX_INLINE_TEXT = 8000
 MAX_INLINE_LINES = 200
+DEFAULT_REVIEW_DIFF_HUNK_LINES = 12
 GRAPHQL_MAX_ATTEMPTS = 4
 GRAPHQL_BACKOFF_BASE_SECONDS = 0.25
 GRAPHQL_BACKOFF_MAX_SECONDS = 2.0
@@ -592,6 +593,7 @@ class GitHubClient:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
@@ -615,6 +617,7 @@ class GitHubClient:
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
         )
@@ -627,6 +630,7 @@ class GitHubClient:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
@@ -650,6 +654,7 @@ class GitHubClient:
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
         )
@@ -1089,6 +1094,7 @@ def _parse_timeline_page(
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str = "pr",
 ) -> TimelinePage:
@@ -1109,6 +1115,7 @@ def _parse_timeline_page(
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
             subject_kind=subject_kind,
         )
@@ -1126,6 +1133,7 @@ def _parse_node(
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str,
 ) -> TimelineEvent | None:
@@ -1170,13 +1178,14 @@ def _parse_node(
                 minimized_hidden_count=1,
                 minimized_hidden_reasons=minimized_reason,
             )
-        full_review, resolved_hidden_count = _build_review_text(
+        full_review, resolved_hidden_count, has_clipped_diff_hunk = _build_review_text(
             node=node,
             ref=ref,
             state=state,
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
         )
         minimized_hidden_count, minimized_hidden_reasons = _build_review_minimized_summary(
@@ -1192,7 +1201,7 @@ def _parse_node(
             summary=summary,
             source_id=review_id,
             full_text=full_review,
-            is_truncated=is_truncated,
+            is_truncated=is_truncated or has_clipped_diff_hunk,
             resolved_hidden_count=resolved_hidden_count,
             minimized_hidden_count=minimized_hidden_count,
             minimized_hidden_reasons=minimized_hidden_reasons,
@@ -1424,8 +1433,9 @@ def _build_review_text(
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    diff_hunk_lines: int | None,
     viewer_login: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, bool]:
     body = (_as_optional_str(node.get("body")) or "").strip()
     total_count = sum(
         len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review
@@ -1434,6 +1444,7 @@ def _build_review_text(
     resolved_hidden_count = 0
     rendered_comments = 0
     rendered_thread_index = 0
+    has_clipped_diff_hunk = False
     for raw_thread in threads_for_review:
         thread = _as_dict(raw_thread, context="review thread")
         is_resolved = bool(thread.get("isResolved"))
@@ -1443,7 +1454,7 @@ def _build_review_text(
             resolved_hidden_count += len(comment_nodes)
             continue
         rendered_thread_index += 1
-        thread_lines, visible_comments = _render_review_thread_block(
+        thread_lines, visible_comments, thread_has_clipped_diff_hunk = _render_review_thread_block(
             thread_id=thread_id,
             is_resolved=is_resolved,
             thread_index=rendered_thread_index,
@@ -1451,9 +1462,11 @@ def _build_review_text(
             ref=ref,
             viewer_login=viewer_login,
             show_minimized_details=show_minimized_details,
+            diff_hunk_lines=diff_hunk_lines,
         )
         detail_lines.extend(thread_lines)
         rendered_comments += visible_comments
+        has_clipped_diff_hunk = has_clipped_diff_hunk or thread_has_clipped_diff_hunk
 
     chunks: list[str] = []
     if body:
@@ -1470,8 +1483,8 @@ def _build_review_text(
         chunks.append("(review threads exist but contain no comment nodes)")
 
     if not chunks:
-        return f"review state: {state.lower()}", resolved_hidden_count
-    return "\n".join(chunks), resolved_hidden_count
+        return f"review state: {state.lower()}", resolved_hidden_count, has_clipped_diff_hunk
+    return "\n".join(chunks), resolved_hidden_count, has_clipped_diff_hunk
 
 
 def _render_review_thread_block(
@@ -1483,11 +1496,13 @@ def _render_review_thread_block(
     ref: PullRequestRef,
     viewer_login: str,
     show_minimized_details: bool,
-) -> tuple[list[str], int]:
+    diff_hunk_lines: int | None,
+) -> tuple[list[str], int, bool]:
     lines = [f"- Thread[{thread_index}] {thread_id}"]
     visible_comments = 0
     minimized_hidden_count = 0
     minimized_reasons: set[str] = set()
+    has_clipped_diff_hunk = False
     for comment_index, raw_comment in enumerate(comments, start=1):
         comment = _as_dict(raw_comment, context="review comment")
         is_minimized = bool(comment.get("isMinimized"))
@@ -1499,16 +1514,17 @@ def _render_review_thread_block(
             if is_minimized:
                 minimized_reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
             continue
-        lines.extend(
-            _render_review_comment_block(
-                comment=comment,
-                index=comment_index,
-                include_diff_hunk=(comment_index == 1),
-                ref=ref,
-                viewer_login=viewer_login,
-            )
+        comment_lines, comment_has_clipped_diff_hunk = _render_review_comment_block(
+            comment=comment,
+            index=comment_index,
+            include_diff_hunk=(comment_index == 1),
+            ref=ref,
+            viewer_login=viewer_login,
+            diff_hunk_lines=diff_hunk_lines,
         )
+        lines.extend(comment_lines)
         visible_comments += 1
+        has_clipped_diff_hunk = has_clipped_diff_hunk or comment_has_clipped_diff_hunk
     if minimized_hidden_count > 0:
         reason_text = ", ".join(sorted(minimized_reasons))
         lines.append(f"  ... {minimized_hidden_count} hidden review comments (reason: {reason_text}).")
@@ -1525,7 +1541,7 @@ def _render_review_thread_block(
         lines.append(
             f"  ⏎ Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
         )
-    return lines, visible_comments
+    return lines, visible_comments, has_clipped_diff_hunk
 
 
 def _build_review_minimized_summary(
@@ -1572,7 +1588,8 @@ def _render_review_comment_block(
     include_diff_hunk: bool = True,
     ref: PullRequestRef,
     viewer_login: str,
-) -> list[str]:
+    diff_hunk_lines: int | None,
+) -> tuple[list[str], bool]:
     path = _as_optional_str(comment.get("path")) or "(unknown path)"
     line = _as_line_ref(comment)
     author = _get_actor_display(comment.get("author"))
@@ -1588,9 +1605,20 @@ def _render_review_comment_block(
     if rendered_body:
         lines.append("  Comment:")
         lines.extend(_indented_tag_block("comment", rendered_body, indent="  "))
+    has_clipped_diff_hunk = False
     if diff_hunk and include_diff_hunk:
+        rendered_diff_hunk = diff_hunk
+        shown_lines = len(diff_hunk.splitlines())
+        total_lines = shown_lines
+        if diff_hunk_lines is not None and diff_hunk_lines > 0:
+            rendered_diff_hunk, has_clipped_diff_hunk, shown_lines, total_lines = _clip_diff_hunk_lines(
+                diff_hunk=diff_hunk,
+                max_lines=diff_hunk_lines,
+            )
         lines.append("  Diff Hunk:")
-        lines.extend(_indented_fenced_block("diff", diff_hunk, indent="  "))
+        lines.extend(_indented_fenced_block("diff", rendered_diff_hunk, indent="  "))
+        if has_clipped_diff_hunk:
+            lines.append(f"  ... diff hunk clipped ({shown_lines}/{total_lines} lines).")
 
     suggestion_diff = _suggestion_to_diff(path=path, line_ref=line, body=body)
     if suggestion_diff:
@@ -1609,7 +1637,25 @@ def _render_review_comment_block(
 
     if not body and not diff_hunk:
         lines.append("  (empty review comment)")
-    return lines
+    return lines, has_clipped_diff_hunk
+
+
+def _clip_diff_hunk_lines(diff_hunk: str, max_lines: int) -> tuple[str, bool, int, int]:
+    lines = diff_hunk.splitlines()
+    total = len(lines)
+    if total <= max_lines or max_lines <= 0:
+        return diff_hunk, False, total, total
+
+    head = max_lines // 2
+    tail = max_lines - head
+    if head <= 0:
+        head = 1
+        tail = max_lines - 1
+    if tail <= 0:
+        tail = 1
+        head = max_lines - 1
+    clipped = [*lines[:head], f"... ({total - max_lines} lines omitted) ...", *lines[-tail:]]
+    return "\n".join(clipped), True, max_lines, total
 
 
 def _as_line_ref(comment: dict[str, object]) -> str:

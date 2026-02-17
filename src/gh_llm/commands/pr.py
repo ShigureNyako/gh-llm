@@ -18,6 +18,8 @@ from gh_llm.render import (
 if TYPE_CHECKING:
     from gh_llm.models import PullRequestMeta, TimelineContext, TimelinePage
 
+DEFAULT_DIFF_HUNK_LINES = 12
+
 
 def register_pr_parser(subparsers: Any) -> None:
     pr_parser = subparsers.add_parser("pr", help="PR-related commands")
@@ -30,6 +32,12 @@ def register_pr_parser(subparsers: Any) -> None:
     view_parser.add_argument("pr", nargs="?", help="PR number/url/branch")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
+    view_parser.add_argument(
+        "--diff-hunk-lines",
+        type=int,
+        default=DEFAULT_DIFF_HUNK_LINES,
+        help="max lines for each review diff hunk (<=0 means full)",
+    )
     view_parser.set_defaults(handler=cmd_pr_view)
 
     timeline_expand_parser = pr_subparsers.add_parser("timeline-expand", help="load one timeline page by number")
@@ -37,6 +45,12 @@ def register_pr_parser(subparsers: Any) -> None:
     timeline_expand_parser.add_argument("--pr", help="PR number/url/branch")
     timeline_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     timeline_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    timeline_expand_parser.add_argument(
+        "--diff-hunk-lines",
+        type=int,
+        default=DEFAULT_DIFF_HUNK_LINES,
+        help="max lines for each review diff hunk (<=0 means full)",
+    )
     timeline_expand_parser.set_defaults(handler=cmd_pr_timeline_expand)
 
     event_parser = pr_subparsers.add_parser("event", help="load one timeline event by global index")
@@ -44,6 +58,12 @@ def register_pr_parser(subparsers: Any) -> None:
     event_parser.add_argument("--pr", help="PR number/url/branch")
     event_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     event_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    event_parser.add_argument(
+        "--diff-hunk-lines",
+        type=int,
+        default=0,
+        help="max lines for each review diff hunk (default full for event view)",
+    )
     event_parser.set_defaults(handler=cmd_pr_event)
 
     review_expand_parser = pr_subparsers.add_parser(
@@ -58,6 +78,12 @@ def register_pr_parser(subparsers: Any) -> None:
     review_expand_parser.add_argument("--pr", help="PR number/url/branch")
     review_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    review_expand_parser.add_argument(
+        "--diff-hunk-lines",
+        type=int,
+        default=DEFAULT_DIFF_HUNK_LINES,
+        help="max lines for each review diff hunk (<=0 means full)",
+    )
     review_expand_parser.set_defaults(handler=cmd_pr_review_expand)
 
     checks_parser = pr_subparsers.add_parser("checks", help="show CI checks for the pull request")
@@ -153,11 +179,12 @@ def register_pr_parser(subparsers: Any) -> None:
 
 def cmd_pr_view(args: Any) -> int:
     page_size = int(args.page_size)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     client = GitHubClient()
     pager = TimelinePager(client)
 
     meta = client.resolve_pull_request(selector=args.pr, repo=args.repo)
-    context, first_page, last_page = pager.build_initial(meta, page_size=page_size)
+    context, first_page, last_page = pager.build_initial(meta, page_size=page_size, diff_hunk_lines=diff_hunk_lines)
     shown_pages: set[int] = {1}
 
     for line in render_header(context):
@@ -170,7 +197,12 @@ def cmd_pr_view(args: Any) -> int:
         include_previous = context.total_pages > 2 and context.total_count % context.page_size != 0
         if include_previous:
             previous_page_number = context.total_pages - 1
-            previous_page = pager.fetch_page(meta=meta, context=context, page=previous_page_number)
+            previous_page = pager.fetch_page(
+                meta=meta,
+                context=context,
+                page=previous_page_number,
+                diff_hunk_lines=diff_hunk_lines,
+            )
             trailing_pages.append((previous_page_number, previous_page))
             shown_pages.add(previous_page_number)
 
@@ -213,8 +245,9 @@ def cmd_pr_timeline_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
     context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
 
-    page = pager.fetch_page(meta=meta, context=context, page=int(args.page))
+    page = pager.fetch_page(meta=meta, context=context, page=int(args.page), diff_hunk_lines=diff_hunk_lines)
 
     for line in render_header(context):
         print(line)
@@ -228,6 +261,7 @@ def cmd_pr_event(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
     context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=0)
 
     index = int(args.index)
     if index < 1 or index > context.total_count:
@@ -240,6 +274,7 @@ def cmd_pr_event(args: Any) -> int:
         page=page_number,
         show_resolved_details=True,
         show_minimized_details=True,
+        diff_hunk_lines=diff_hunk_lines,
     )
 
     page_start = (page_number - 1) * context.page_size + 1
@@ -257,6 +292,10 @@ def cmd_pr_review_expand(args: Any) -> int:
     pager = TimelinePager(client)
     context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
     review_ids = parse_review_ids(args.review_ids)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
+    if diff_hunk_lines is not None:
+        print("Δ Diff hunk window is limited; rerun with `--diff-hunk-lines 0` for full review diff context.")
+        print()
 
     matched: dict[str, tuple[int, TimelinePage]] = {}
     for page_number in range(1, context.total_pages + 1):
@@ -266,6 +305,7 @@ def cmd_pr_review_expand(args: Any) -> int:
             page=page_number,
             show_resolved_details=True,
             show_minimized_details=True,
+            diff_hunk_lines=diff_hunk_lines,
         )
         for offset, event in enumerate(page.items):
             if not event.kind.startswith("review/"):
@@ -475,9 +515,24 @@ def _resolve_context_and_meta(
         raise RuntimeError("`--pr` is required when `--repo` is provided")
     page_size = getattr(args, "page_size", None)
     effective_page_size = DEFAULT_PAGE_SIZE if page_size is None else int(page_size)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     meta = client.resolve_pull_request(selector=selector, repo=repo)
-    context, _, _ = pager.build_initial(meta=meta, page_size=effective_page_size)
+    context, _, _ = pager.build_initial(
+        meta=meta,
+        page_size=effective_page_size,
+        diff_hunk_lines=diff_hunk_lines,
+    )
     return context, meta
+
+
+def _resolve_diff_hunk_lines(*, args: Any, default: int) -> int | None:
+    raw = getattr(args, "diff_hunk_lines", None)
+    if raw is None:
+        raw = default
+    value = int(raw)
+    if value <= 0:
+        return None
+    return value
 
 
 def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
