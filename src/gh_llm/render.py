@@ -219,8 +219,17 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
             f"   {event.resolved_hidden_count} resolved review comments are collapsed; "
             f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
         )
+    if event.minimized_hidden_count > 0:
+        repo = f"{context.owner}/{context.name}"
+        reason_suffix = f" (reason: {event.minimized_hidden_reasons})" if event.minimized_hidden_reasons else ""
+        lines.append(
+            f"   {event.minimized_hidden_count} hidden review comments are collapsed{reason_suffix}; "
+            f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
+        )
     if event.is_truncated:
-        lines.append(f"   ⏎ run `gh-llm {command_group} event {index}` for full content")
+        lines.append(
+            f"   ⏎ run `gh-llm {command_group} event {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}` for full content"
+        )
     if event.kind == "push/commit":
         lines.append(
             f"   Δ commit diff: `gh api repos/{context.owner}/{context.name}/commits/{event.source_id} -H 'Accept: application/vnd.github.v3.diff'`"

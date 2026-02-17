@@ -284,22 +284,13 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert code == 0
     out = capsys.readouterr().out
     assert "## Timeline Page 3/4" in out
-    assert "Review comments (2/3 shown):" in out
-    assert "Thread[1] PRRT_mock_1" in out
-    assert "[1] python/test_file.py:L21 by @reviewer" in out
-    assert "[2] python/test_file.py:L22 by @reviewer" not in out
-    assert "Diff Hunk:" in out
-    assert "Reactions: ❤️ x1" in out
-    assert "1 resolved review comments are collapsed;" in out
+    assert "(review hidden: outdated)" in out
+    assert "Review comments (1/3 shown):" not in out
+    assert "Thread[1] PRRT_mock_1" not in out
+    assert "1 resolved review comments are collapsed;" not in out
+    assert "1 hidden review comments are collapsed (reason: outdated);" in out
     assert "gh-llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
-    assert "thread_id: PRRT_mock_1" in out
-    assert "Reply via gh-llm:" in out
-    assert "Resolve via gh-llm:" in out
-    assert "Unresolve via gh-llm:" not in out
-    assert (
-        "Edit comment via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
-        in out
-    )
+    assert "thread_id: PRRT_mock_1" not in out
     assert "Reply via gh: `gh api graphql" not in out
     assert "Resolve via gh: `gh api graphql" not in out
 
@@ -309,9 +300,18 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert code == 0
     out = capsys.readouterr().out
     assert "## Timeline Event" in out
+    assert "lgtm" in out
+    assert "Review comments (3/3 shown):" in out
+    assert "PRRT_mock_1" in out
+    assert "The error message could be more helpful." in out
+    assert "Reactions: ❤️ x1" in out
     assert "Suggested Change:" in out
     assert "@@ python/test_file.py:L22 @@" in out
     assert "+new_api_call()" in out
+    assert (
+        "Edit comment via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
     assert "Unresolve via gh-llm:" in out
 
     code = cli.run(["pr", "checks", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--all"])
@@ -456,6 +456,8 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "## Timeline Page 2/3" in out
     assert "## Timeline Page 3/3" in out
     assert "Hidden timeline page" not in out
+    assert "(comment hidden: outdated)" in out
+    assert "run `gh-llm issue event 1 --issue 77924 --repo PaddlePaddle/Paddle` for full content" in out
     assert "Issue actions:" in out
     assert "gh issue comment 77924 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
     assert "gh issue close 77924 --repo PaddlePaddle/Paddle" in out
@@ -774,13 +776,16 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                         {
                                             "id": "rc2",
                                             "path": "python/test_file.py",
-                                            "body": "```suggestion\nnew_api_call()\n```",
+                                            "body": "The error message could be more helpful.\n```suggestion\nnew_api_call()\n```",
                                             "line": 22,
                                             "originalLine": 22,
                                             "startLine": None,
                                             "originalStartLine": None,
                                             "diffHunk": "@@ -22,1 +22,1 @@\n-old_api_call()",
                                             "createdAt": "2026-02-14T14:50:02Z",
+                                            "outdated": False,
+                                            "isMinimized": False,
+                                            "minimizedReason": None,
                                             "author": {"login": "reviewer"},
                                             "reactionGroups": [],
                                             "pullRequestReview": {"id": "PRR_mock"},
@@ -803,6 +808,9 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "originalStartLine": None,
                                             "diffHunk": "@@ -20,2 +20,2 @@\n-old_name\n+new_name",
                                             "createdAt": "2026-02-14T14:50:01Z",
+                                            "outdated": False,
+                                            "isMinimized": False,
+                                            "minimizedReason": None,
                                             "author": {"login": "reviewer"},
                                             "reactionGroups": [{"content": "HEART", "users": {"totalCount": 1}}],
                                             "pullRequestReview": {"id": "PRR_mock"},
@@ -817,6 +825,9 @@ def _review_threads_payload(after: str | None) -> dict[str, Any]:
                                             "originalStartLine": None,
                                             "diffHunk": "@@ -23,1 +23,1 @@\n-old\n+new",
                                             "createdAt": "2026-02-14T14:50:03Z",
+                                            "outdated": True,
+                                            "isMinimized": False,
+                                            "minimizedReason": None,
                                             "author": {"login": "ShigureNyako"},
                                             "reactionGroups": [],
                                             "pullRequestReview": {"id": "PRR_mock"},
@@ -925,6 +936,8 @@ def _base_events() -> list[dict[str, Any]]:
             "submittedAt": "2026-02-14T14:51:00Z",
             "state": "APPROVED",
             "body": "lgtm",
+            "isMinimized": True,
+            "minimizedReason": "OUTDATED",
             "author": {"login": "reviewer"},
         },
         {
@@ -1019,6 +1032,8 @@ def _issue_events() -> list[dict[str, Any]]:
             "url": "https://example.com/ic1",
             "createdAt": "2026-02-13T10:00:00Z",
             "body": long_comment,
+            "isMinimized": True,
+            "minimizedReason": "OUTDATED",
             "author": {"login": "bot"},
             "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 1}}],
         },
@@ -1049,6 +1064,8 @@ def _issue_events() -> list[dict[str, Any]]:
             "url": "https://example.com/ic2",
             "createdAt": "2026-02-13T13:00:00Z",
             "body": "self issue comment",
+            "isMinimized": False,
+            "minimizedReason": None,
             "author": {"login": "ShigureNyako"},
             "reactionGroups": [],
         },

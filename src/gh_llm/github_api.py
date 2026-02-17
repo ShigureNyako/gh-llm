@@ -39,6 +39,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             url
             createdAt
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
@@ -47,6 +49,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             submittedAt
             state
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
@@ -126,6 +130,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             url
             createdAt
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
@@ -196,6 +202,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             url
             createdAt
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
@@ -204,6 +212,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             submittedAt
             state
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
@@ -283,6 +293,8 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             url
             createdAt
             body
+            isMinimized
+            minimizedReason
             author{login ... on User{name}}
             reactionGroups{content users{totalCount}}
           }
@@ -359,6 +371,9 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
               originalStartLine
               diffHunk
               createdAt
+              outdated
+              isMinimized
+              minimizedReason
               author{login ... on User{name}}
               reactionGroups{content users{totalCount}}
               pullRequestReview{id}
@@ -576,6 +591,7 @@ class GitHubClient:
         after: str | None,
         *,
         show_resolved_details: bool = False,
+        show_minimized_details: bool = False,
         kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
@@ -598,6 +614,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
         )
@@ -609,6 +626,7 @@ class GitHubClient:
         before: str | None,
         *,
         show_resolved_details: bool = False,
+        show_minimized_details: bool = False,
         kind: str = "pr",
     ) -> TimelinePage:
         variables: dict[str, str | int] = {
@@ -631,6 +649,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
         )
@@ -1069,6 +1088,7 @@ def _parse_timeline_page(
     ref: PullRequestRef,
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    show_minimized_details: bool,
     viewer_login: str,
     subject_kind: str = "pr",
 ) -> TimelinePage:
@@ -1088,6 +1108,7 @@ def _parse_timeline_page(
             ref=ref,
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             viewer_login=viewer_login,
             subject_kind=subject_kind,
         )
@@ -1104,13 +1125,20 @@ def _parse_node(
     ref: PullRequestRef,
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    show_minimized_details: bool,
     viewer_login: str,
     subject_kind: str,
 ) -> TimelineEvent | None:
     typename = str(node.get("__typename") or "")
     if typename == "IssueComment":
         body = _as_optional_str(node.get("body"))
-        summary, is_truncated = _clip_text(body, "(no comment body)")
+        is_minimized = bool(node.get("isMinimized"))
+        minimized_reason = _format_minimized_reason(node.get("minimizedReason"))
+        if is_minimized and not show_minimized_details:
+            summary = f"(comment hidden: {minimized_reason})"
+            is_truncated = True
+        else:
+            summary, is_truncated = _clip_text(body, "(no comment body)")
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
             kind="comment",
@@ -1128,13 +1156,33 @@ def _parse_node(
     if typename == "PullRequestReview":
         state = _as_optional_str(node.get("state")) or "COMMENTED"
         review_id = _as_optional_str(node.get("id")) or "review"
+        is_minimized = bool(node.get("isMinimized"))
+        minimized_reason = _format_minimized_reason(node.get("minimizedReason"))
+        if is_minimized and not show_minimized_details:
+            return TimelineEvent(
+                timestamp=_parse_datetime(_as_optional_str(node.get("submittedAt"))),
+                kind=f"review/{state.lower()}",
+                actor=_get_actor_display(node.get("author")),
+                summary=f"(review hidden: {minimized_reason})",
+                source_id=review_id,
+                full_text=_as_optional_str(node.get("body")),
+                is_truncated=True,
+                minimized_hidden_count=1,
+                minimized_hidden_reasons=minimized_reason,
+            )
         full_review, resolved_hidden_count = _build_review_text(
             node=node,
             ref=ref,
             state=state,
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             viewer_login=viewer_login,
+        )
+        minimized_hidden_count, minimized_hidden_reasons = _build_review_minimized_summary(
+            threads_for_review=threads_for_review.get(review_id, []),
+            show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
         )
         summary, is_truncated = _clip_text(full_review, f"review state: {state.lower()}")
         return TimelineEvent(
@@ -1146,6 +1194,8 @@ def _parse_node(
             full_text=full_review,
             is_truncated=is_truncated,
             resolved_hidden_count=resolved_hidden_count,
+            minimized_hidden_count=minimized_hidden_count,
+            minimized_hidden_reasons=minimized_hidden_reasons,
         )
 
     if typename == "PullRequestCommit":
@@ -1373,6 +1423,7 @@ def _build_review_text(
     *,
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
+    show_minimized_details: bool,
     viewer_login: str,
 ) -> tuple[str, int]:
     body = (_as_optional_str(node.get("body")) or "").strip()
@@ -1392,17 +1443,17 @@ def _build_review_text(
             resolved_hidden_count += len(comment_nodes)
             continue
         rendered_thread_index += 1
-        detail_lines.extend(
-            _render_review_thread_block(
-                thread_id=thread_id,
-                is_resolved=is_resolved,
-                thread_index=rendered_thread_index,
-                comments=comment_nodes,
-                ref=ref,
-                viewer_login=viewer_login,
-            )
+        thread_lines, visible_comments = _render_review_thread_block(
+            thread_id=thread_id,
+            is_resolved=is_resolved,
+            thread_index=rendered_thread_index,
+            comments=comment_nodes,
+            ref=ref,
+            viewer_login=viewer_login,
+            show_minimized_details=show_minimized_details,
         )
-        rendered_comments += len(comment_nodes)
+        detail_lines.extend(thread_lines)
+        rendered_comments += visible_comments
 
     chunks: list[str] = []
     if body:
@@ -1431,10 +1482,23 @@ def _render_review_thread_block(
     comments: list[object],
     ref: PullRequestRef,
     viewer_login: str,
-) -> list[str]:
+    show_minimized_details: bool,
+) -> tuple[list[str], int]:
     lines = [f"- Thread[{thread_index}] {thread_id}"]
+    visible_comments = 0
+    minimized_hidden_count = 0
+    minimized_reasons: set[str] = set()
     for comment_index, raw_comment in enumerate(comments, start=1):
         comment = _as_dict(raw_comment, context="review comment")
+        is_minimized = bool(comment.get("isMinimized"))
+        is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
+        if (is_minimized or is_outdated) and not show_minimized_details:
+            minimized_hidden_count += 1
+            if is_outdated:
+                minimized_reasons.add("outdated")
+            if is_minimized:
+                minimized_reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
+            continue
         lines.extend(
             _render_review_comment_block(
                 comment=comment,
@@ -1444,6 +1508,10 @@ def _render_review_thread_block(
                 viewer_login=viewer_login,
             )
         )
+        visible_comments += 1
+    if minimized_hidden_count > 0:
+        reason_text = ", ".join(sorted(minimized_reasons))
+        lines.append(f"  ... {minimized_hidden_count} hidden review comments (reason: {reason_text}).")
     lines.append(f"  ◌ thread_id: {thread_id}")
     lines.append("  ⌨ reply_body: '<reply>'")
     lines.append(
@@ -1457,7 +1525,44 @@ def _render_review_thread_block(
         lines.append(
             f"  ⏎ Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
         )
-    return lines
+    return lines, visible_comments
+
+
+def _build_review_minimized_summary(
+    *,
+    threads_for_review: list[dict[str, object]],
+    show_resolved_details: bool,
+    show_minimized_details: bool,
+) -> tuple[int, str | None]:
+    if show_minimized_details:
+        return 0, None
+    reasons: set[str] = set()
+    count = 0
+    for raw_thread in threads_for_review:
+        thread = _as_dict(raw_thread, context="review thread for minimized summary")
+        if bool(thread.get("isResolved")) and not show_resolved_details:
+            continue
+        for raw_comment in _as_list(thread.get("comments")):
+            comment = _as_dict(raw_comment, context="review comment for minimized summary")
+            is_minimized = bool(comment.get("isMinimized"))
+            is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
+            if not (is_minimized or is_outdated):
+                continue
+            count += 1
+            if is_outdated:
+                reasons.add("outdated")
+            if is_minimized:
+                reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
+    if count == 0:
+        return 0, None
+    return count, ", ".join(sorted(reasons))
+
+
+def _format_minimized_reason(value: object) -> str:
+    raw = (_as_optional_str(value) or "unknown").strip()
+    if not raw:
+        return "unknown"
+    return raw.lower().replace("_", " ")
 
 
 def _render_review_comment_block(
@@ -1475,12 +1580,14 @@ def _render_review_comment_block(
     body = (_as_optional_str(comment.get("body")) or "").strip()
     diff_hunk = (_as_optional_str(comment.get("diffHunk")) or "").strip()
     suggestion_lines = _extract_suggestion_lines(body)
-    rendered_body = "\n".join(suggestion_lines) if suggestion_lines else body
+    rendered_body = _strip_suggestion_blocks(body).strip()
+    if not rendered_body and not suggestion_lines:
+        rendered_body = body
 
     lines = [f"- [{index}] {path}{line} by @{author} at {created_at}"]
     if rendered_body:
         lines.append("  Comment:")
-        lines.extend(_indented_fenced_block("text", rendered_body, indent="  "))
+        lines.extend(_indented_tag_block("comment", rendered_body, indent="  "))
     if diff_hunk and include_diff_hunk:
         lines.append("  Diff Hunk:")
         lines.extend(_indented_fenced_block("diff", diff_hunk, indent="  "))
@@ -1529,6 +1636,13 @@ def _indented_fenced_block(language: str, content: str, indent: str = "") -> lis
     return out
 
 
+def _indented_tag_block(tag: str, content: str, indent: str = "") -> list[str]:
+    out = [f"{indent}<{tag}>"]
+    out.extend(f"{indent}{line}" for line in content.splitlines())
+    out.append(f"{indent}</{tag}>")
+    return out
+
+
 def _suggestion_to_diff(path: str, line_ref: str, body: str) -> str | None:
     suggestion_lines = _extract_suggestion_lines(body)
     if not suggestion_lines:
@@ -1554,6 +1668,23 @@ def _extract_suggestion_lines(text: str) -> list[str]:
     if end < 0:
         end = len(lines)
     return [line.rstrip() for line in lines[start:end]]
+
+
+def _strip_suggestion_blocks(text: str) -> str:
+    lines = text.splitlines()
+    out: list[str] = []
+    in_suggestion = False
+    for line in lines:
+        marker = line.strip().lower()
+        if not in_suggestion and marker.startswith("```suggestion"):
+            in_suggestion = True
+            continue
+        if in_suggestion and marker.startswith("```"):
+            in_suggestion = False
+            continue
+        if not in_suggestion:
+            out.append(line.rstrip())
+    return "\n".join(out)
 
 
 def _parse_datetime(value: str | None) -> datetime:

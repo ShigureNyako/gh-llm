@@ -47,6 +47,8 @@ class TimelineEvent:
     full_text: str | None = None
     is_truncated: bool = False
     resolved_hidden_count: int = 0
+    minimized_hidden_count: int = 0
+    minimized_hidden_reasons: str | None = None
     editable_comment_id: str | None = None
     reactions_summary: str | None = None
 

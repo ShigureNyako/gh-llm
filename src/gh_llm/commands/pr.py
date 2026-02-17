@@ -234,7 +234,13 @@ def cmd_pr_event(args: Any) -> int:
         raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
 
     page_number = ((index - 1) // context.page_size) + 1
-    page = pager.fetch_page(meta=meta, context=context, page=page_number)
+    page = pager.fetch_page(
+        meta=meta,
+        context=context,
+        page=page_number,
+        show_resolved_details=True,
+        show_minimized_details=True,
+    )
 
     page_start = (page_number - 1) * context.page_size + 1
     offset = index - page_start
@@ -254,7 +260,13 @@ def cmd_pr_review_expand(args: Any) -> int:
 
     matched: dict[str, tuple[int, TimelinePage]] = {}
     for page_number in range(1, context.total_pages + 1):
-        page = pager.fetch_page(meta=meta, context=context, page=page_number, show_resolved_details=True)
+        page = pager.fetch_page(
+            meta=meta,
+            context=context,
+            page=page_number,
+            show_resolved_details=True,
+            show_minimized_details=True,
+        )
         for offset, event in enumerate(page.items):
             if not event.kind.startswith("review/"):
                 continue

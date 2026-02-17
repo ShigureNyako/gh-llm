@@ -17,7 +17,12 @@ class TimelinePager:
         self._client = client
 
     def build_initial(
-        self, meta: PullRequestMeta, page_size: int, *, show_resolved_details: bool = False
+        self,
+        meta: PullRequestMeta,
+        page_size: int,
+        *,
+        show_resolved_details: bool = False,
+        show_minimized_details: bool = False,
     ) -> tuple[TimelineContext, TimelinePage, TimelinePage | None]:
         _validate_page_size(page_size)
 
@@ -26,6 +31,7 @@ class TimelinePager:
             page_size=page_size,
             after=None,
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             kind=meta.kind,
         )
         total_count = first_page.total_count
@@ -64,24 +70,49 @@ class TimelinePager:
             page_size=last_page_size,
             before=None,
             show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
             kind=meta.kind,
         )
         self._remember_backward(context, page=total_pages, cursor_used=None, page_result=last_page)
         return context, first_page, last_page
 
     def fetch_page(
-        self, meta: PullRequestMeta, context: TimelineContext, page: int, *, show_resolved_details: bool = False
+        self,
+        meta: PullRequestMeta,
+        context: TimelineContext,
+        page: int,
+        *,
+        show_resolved_details: bool = False,
+        show_minimized_details: bool = False,
     ) -> TimelinePage:
         _validate_page(page, context.total_pages)
 
         from_start = page - 1
         from_end = context.total_pages - page
         if from_start <= from_end:
-            return self._walk_forward(meta, context, page, show_resolved_details=show_resolved_details)
-        return self._walk_backward(meta, context, page, show_resolved_details=show_resolved_details)
+            return self._walk_forward(
+                meta,
+                context,
+                page,
+                show_resolved_details=show_resolved_details,
+                show_minimized_details=show_minimized_details,
+            )
+        return self._walk_backward(
+            meta,
+            context,
+            page,
+            show_resolved_details=show_resolved_details,
+            show_minimized_details=show_minimized_details,
+        )
 
     def _walk_forward(
-        self, meta: PullRequestMeta, context: TimelineContext, target_page: int, *, show_resolved_details: bool
+        self,
+        meta: PullRequestMeta,
+        context: TimelineContext,
+        target_page: int,
+        *,
+        show_resolved_details: bool,
+        show_minimized_details: bool,
     ) -> TimelinePage:
         start_page = max(page for page in context.forward_after_by_page if page <= target_page)
         cursor = context.forward_after_by_page[start_page]
@@ -93,6 +124,7 @@ class TimelinePager:
                 page_size=context.page_size,
                 after=cursor,
                 show_resolved_details=show_resolved_details,
+                show_minimized_details=show_minimized_details,
                 kind=meta.kind,
             )
             self._remember_forward(context, page=page, cursor_used=cursor, page_result=result)
@@ -104,7 +136,13 @@ class TimelinePager:
             page += 1
 
     def _walk_backward(
-        self, meta: PullRequestMeta, context: TimelineContext, target_page: int, *, show_resolved_details: bool
+        self,
+        meta: PullRequestMeta,
+        context: TimelineContext,
+        target_page: int,
+        *,
+        show_resolved_details: bool,
+        show_minimized_details: bool,
     ) -> TimelinePage:
         start_page = min(page for page in context.backward_before_by_page if page >= target_page)
         cursor = context.backward_before_by_page[start_page]
@@ -122,6 +160,7 @@ class TimelinePager:
                 page_size=current_page_size,
                 before=cursor,
                 show_resolved_details=show_resolved_details,
+                show_minimized_details=show_minimized_details,
                 kind=meta.kind,
             )
             self._remember_backward(context, page=page, cursor_used=cursor, page_result=result)

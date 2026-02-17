@@ -127,7 +127,12 @@ def cmd_issue_event(args: Any) -> int:
         raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
 
     page_number = ((index - 1) // context.page_size) + 1
-    page = pager.fetch_page(meta=meta, context=context, page=page_number)
+    page = pager.fetch_page(
+        meta=meta,
+        context=context,
+        page=page_number,
+        show_minimized_details=True,
+    )
 
     page_start = (page_number - 1) * context.page_size + 1
     offset = index - page_start
