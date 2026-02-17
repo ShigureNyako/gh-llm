@@ -37,10 +37,22 @@ CLI tooling for LLM-first GitHub reading and review workflows.
 
 ## Install
 
+### As CLI (recommended)
+
 ```bash
 uv tool install gh-llm
 gh-llm --help
 ```
+
+### As gh extension
+
+```bash
+gh extension install ShigureLab/gh-llm
+gh llm --help
+```
+
+The extension entrypoint forwards to local repository path via `uvx --from <extension_repo_path> gh-llm ...`.
+`gh llm ...` and `gh-llm ...` are equivalent command surfaces.
 
 ## Quick Start
 
@@ -49,6 +61,7 @@ gh-llm --help
 ```bash
 # Show first + last timeline pages with actionable hints
 gh-llm pr view 77900 --repo PaddlePaddle/Paddle
+gh llm pr view 77900 --repo PaddlePaddle/Paddle
 
 # Expand one hidden timeline page
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
