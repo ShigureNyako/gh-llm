@@ -51,6 +51,7 @@ class TimelineEvent:
     minimized_hidden_reasons: str | None = None
     editable_comment_id: str | None = None
     reactions_summary: str | None = None
+    details_collapsed_count: int = 0
 
 
 @dataclass(frozen=True)

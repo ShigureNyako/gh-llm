@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC
 from typing import TYPE_CHECKING
 
@@ -8,6 +9,10 @@ if TYPE_CHECKING:
     from string.templatelib import Template
 
     from gh_llm.models import CheckItem, TimelineContext, TimelineEvent, TimelinePage
+
+
+DETAILS_BLOCK_RE = re.compile(r"(?is)<details\b[^>]*>(.*?)</details>")
+SUMMARY_RE = re.compile(r"(?is)<summary\b[^>]*>(.*?)</summary>")
 
 
 def render_header(context: TimelineContext) -> list[str]:
@@ -199,10 +204,15 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
 def _render_item(index: int, event: TimelineEvent, context: TimelineContext, command_group: str) -> list[str]:
     timestamp = event.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     selector_name = "issue" if command_group == "issue" else "pr"
+    details_action = f"⏎ run `gh-llm {command_group} details-expand {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}`"
+    display_summary = (event.summary or "").replace(
+        "(details body collapsed)",
+        f"(details body collapsed; {details_action})",
+    )
     lines = [f"{index}. [{timestamp}] {event.kind} by @{event.actor}"]
     if event.kind == "comment":
         lines.append("   Comment:")
-        lines.extend(_indented_tag_block("comment", event.summary, indent="   "))
+        lines.extend(_indented_tag_block("comment", display_summary, indent="   "))
         if event.reactions_summary:
             lines.append(f"   Reactions: {event.reactions_summary}")
         if event.editable_comment_id:
@@ -212,7 +222,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
                 f"   ⏎ Edit comment via gh-llm: `gh-llm {command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}`"
             )
     else:
-        lines.extend(_indent_block(event.summary))
+        lines.extend(_indent_block(display_summary))
     if event.resolved_hidden_count > 0:
         repo = f"{context.owner}/{context.name}"
         lines.append(
@@ -278,6 +288,23 @@ def render_event_detail(index: int, event: TimelineEvent) -> list[str]:
     return lines
 
 
+def render_event_detail_blocks(index: int, event: TimelineEvent) -> list[str]:
+    detail = event.full_text or event.summary
+    blocks = _extract_details_blocks(detail)
+    lines = [f"## Details Blocks for Event {index}"]
+    if not blocks:
+        lines.append("(no <details> blocks found)")
+        return lines
+    for position, (summary, body) in enumerate(blocks, start=1):
+        lines.append(f"{position}.")
+        lines.append("   <details>")
+        lines.append(f"   <summary>{summary}</summary>")
+        for raw in body.splitlines() or ["(empty)"]:
+            lines.append(f"   {raw}")
+        lines.append("   </details>")
+    return lines
+
+
 def _indent_block(text: str) -> list[str]:
     content_lines = text.splitlines() or [text]
     return [f"   {line}" for line in content_lines]
@@ -288,3 +315,18 @@ def _indented_tag_block(tag: str, content: str, indent: str = "") -> list[str]:
     out.extend(f"{indent}{line}" for line in content.splitlines())
     out.append(f"{indent}</{tag}>")
     return out
+
+
+def _extract_details_blocks(text: str) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    for match in DETAILS_BLOCK_RE.finditer(text or ""):
+        inner = (match.group(1) or "").strip()
+        summary_match = SUMMARY_RE.search(inner)
+        summary = "details"
+        if summary_match is not None:
+            summary = " ".join((summary_match.group(1) or "").split()) or "details"
+            body = SUMMARY_RE.sub("", inner).strip()
+        else:
+            body = inner
+        blocks.append((summary, body))
+    return blocks

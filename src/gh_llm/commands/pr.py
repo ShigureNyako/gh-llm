@@ -8,6 +8,7 @@ from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
     render_checks_section,
     render_event_detail,
+    render_event_detail_blocks,
     render_expand_hints,
     render_header,
     render_hidden_gap,
@@ -65,6 +66,16 @@ def register_pr_parser(subparsers: Any) -> None:
         help="max lines for each review diff hunk (default full for event view)",
     )
     event_parser.set_defaults(handler=cmd_pr_event)
+
+    details_expand_parser = pr_subparsers.add_parser(
+        "details-expand",
+        help="show collapsed <details>/<summary> blocks for one timeline event",
+    )
+    details_expand_parser.add_argument("index", type=int, help="1-based event index from timeline view")
+    details_expand_parser.add_argument("--pr", help="PR number/url/branch")
+    details_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    details_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    details_expand_parser.set_defaults(handler=cmd_pr_details_expand)
 
     review_expand_parser = pr_subparsers.add_parser(
         "review-expand",
@@ -274,6 +285,7 @@ def cmd_pr_event(args: Any) -> int:
         page=page_number,
         show_resolved_details=True,
         show_minimized_details=True,
+        show_details_blocks=False,
         diff_hunk_lines=diff_hunk_lines,
     )
 
@@ -283,6 +295,36 @@ def cmd_pr_event(args: Any) -> int:
         raise RuntimeError("event index is outside loaded page range")
 
     for line in render_event_detail(index=index, event=page.items[offset]):
+        print(line)
+    return 0
+
+
+def cmd_pr_details_expand(args: Any) -> int:
+    client = GitHubClient()
+    pager = TimelinePager(client)
+    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+
+    index = int(args.index)
+    if index < 1 or index > context.total_count:
+        raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
+
+    page_number = ((index - 1) // context.page_size) + 1
+    page = pager.fetch_page(
+        meta=meta,
+        context=context,
+        page=page_number,
+        show_resolved_details=True,
+        show_minimized_details=True,
+        show_details_blocks=True,
+        diff_hunk_lines=None,
+    )
+
+    page_start = (page_number - 1) * context.page_size + 1
+    offset = index - page_start
+    if offset < 0 or offset >= len(page.items):
+        raise RuntimeError("event index is outside loaded page range")
+
+    for line in render_event_detail_blocks(index=index, event=page.items[offset]):
         print(line)
     return 0
 
@@ -305,6 +347,7 @@ def cmd_pr_review_expand(args: Any) -> int:
             page=page_number,
             show_resolved_details=True,
             show_minimized_details=True,
+            show_details_blocks=False,
             diff_hunk_lines=diff_hunk_lines,
         )
         for offset, event in enumerate(page.items):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ DEFAULT_REVIEW_DIFF_HUNK_LINES = 12
 GRAPHQL_MAX_ATTEMPTS = 4
 GRAPHQL_BACKOFF_BASE_SECONDS = 0.25
 GRAPHQL_BACKOFF_MAX_SECONDS = 2.0
+DETAILS_BLOCK_RE = re.compile(r"(?is)<details\b[^>]*>(.*?)</details>")
+SUMMARY_RE = re.compile(r"(?is)<summary\b[^>]*>(.*?)</summary>")
+HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
 
 
 @dataclass(frozen=True)
@@ -593,6 +597,7 @@ class GitHubClient:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        show_details_blocks: bool = False,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
@@ -617,6 +622,7 @@ class GitHubClient:
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
@@ -630,6 +636,7 @@ class GitHubClient:
         *,
         show_resolved_details: bool = False,
         show_minimized_details: bool = False,
+        show_details_blocks: bool = False,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
@@ -654,6 +661,7 @@ class GitHubClient:
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
@@ -1094,6 +1102,7 @@ def _parse_timeline_page(
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    show_details_blocks: bool,
     diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str = "pr",
@@ -1115,6 +1124,7 @@ def _parse_timeline_page(
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
             subject_kind=subject_kind,
@@ -1133,6 +1143,7 @@ def _parse_node(
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    show_details_blocks: bool,
     diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str,
@@ -1140,25 +1151,30 @@ def _parse_node(
     typename = str(node.get("__typename") or "")
     if typename == "IssueComment":
         body = _as_optional_str(node.get("body"))
+        details_collapsed_count = 0
+        display_body = body
+        if not show_details_blocks:
+            display_body, details_collapsed_count = _collapse_details_blocks(body)
         is_minimized = bool(node.get("isMinimized"))
         minimized_reason = _format_minimized_reason(node.get("minimizedReason"))
         if is_minimized and not show_minimized_details:
             summary = f"(comment hidden: {minimized_reason})"
             is_truncated = True
         else:
-            summary, is_truncated = _clip_text(body, "(no comment body)")
+            summary, is_truncated = _clip_text(display_body, "(no comment body)")
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
             kind="comment",
             actor=_get_actor_display(node.get("author")),
             summary=summary,
             source_id=_as_optional_str(node.get("id")) or "comment",
-            full_text=body,
+            full_text=display_body,
             is_truncated=is_truncated,
             editable_comment_id=(
                 _as_optional_str(node.get("id")) if _get_login(node.get("author")) == viewer_login else None
             ),
             reactions_summary=_format_reactions(node.get("reactionGroups")),
+            details_collapsed_count=details_collapsed_count,
         )
 
     if typename == "PullRequestReview":
@@ -1178,13 +1194,14 @@ def _parse_node(
                 minimized_hidden_count=1,
                 minimized_hidden_reasons=minimized_reason,
             )
-        full_review, resolved_hidden_count, has_clipped_diff_hunk = _build_review_text(
+        full_review, resolved_hidden_count, has_clipped_diff_hunk, details_collapsed_count = _build_review_text(
             node=node,
             ref=ref,
             state=state,
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
             show_minimized_details=show_minimized_details,
+            show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
         )
@@ -1205,6 +1222,7 @@ def _parse_node(
             resolved_hidden_count=resolved_hidden_count,
             minimized_hidden_count=minimized_hidden_count,
             minimized_hidden_reasons=minimized_hidden_reasons,
+            details_collapsed_count=details_collapsed_count,
         )
 
     if typename == "PullRequestCommit":
@@ -1433,10 +1451,15 @@ def _build_review_text(
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
     show_minimized_details: bool,
+    show_details_blocks: bool,
     diff_hunk_lines: int | None,
     viewer_login: str,
-) -> tuple[str, int, bool]:
+) -> tuple[str, int, bool, int]:
     body = (_as_optional_str(node.get("body")) or "").strip()
+    details_collapsed_count = 0
+    if not show_details_blocks:
+        body, body_details_count = _collapse_details_blocks(body)
+        details_collapsed_count += body_details_count
     total_count = sum(
         len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review
     )
@@ -1454,19 +1477,23 @@ def _build_review_text(
             resolved_hidden_count += len(comment_nodes)
             continue
         rendered_thread_index += 1
-        thread_lines, visible_comments, thread_has_clipped_diff_hunk = _render_review_thread_block(
-            thread_id=thread_id,
-            is_resolved=is_resolved,
-            thread_index=rendered_thread_index,
-            comments=comment_nodes,
-            ref=ref,
-            viewer_login=viewer_login,
-            show_minimized_details=show_minimized_details,
-            diff_hunk_lines=diff_hunk_lines,
+        thread_lines, visible_comments, thread_has_clipped_diff_hunk, thread_details_collapsed_count = (
+            _render_review_thread_block(
+                thread_id=thread_id,
+                is_resolved=is_resolved,
+                thread_index=rendered_thread_index,
+                comments=comment_nodes,
+                ref=ref,
+                viewer_login=viewer_login,
+                show_minimized_details=show_minimized_details,
+                show_details_blocks=show_details_blocks,
+                diff_hunk_lines=diff_hunk_lines,
+            )
         )
         detail_lines.extend(thread_lines)
         rendered_comments += visible_comments
         has_clipped_diff_hunk = has_clipped_diff_hunk or thread_has_clipped_diff_hunk
+        details_collapsed_count += thread_details_collapsed_count
 
     chunks: list[str] = []
     if body:
@@ -1483,8 +1510,8 @@ def _build_review_text(
         chunks.append("(review threads exist but contain no comment nodes)")
 
     if not chunks:
-        return f"review state: {state.lower()}", resolved_hidden_count, has_clipped_diff_hunk
-    return "\n".join(chunks), resolved_hidden_count, has_clipped_diff_hunk
+        return f"review state: {state.lower()}", resolved_hidden_count, has_clipped_diff_hunk, details_collapsed_count
+    return "\n".join(chunks), resolved_hidden_count, has_clipped_diff_hunk, details_collapsed_count
 
 
 def _render_review_thread_block(
@@ -1496,13 +1523,15 @@ def _render_review_thread_block(
     ref: PullRequestRef,
     viewer_login: str,
     show_minimized_details: bool,
+    show_details_blocks: bool,
     diff_hunk_lines: int | None,
-) -> tuple[list[str], int, bool]:
+) -> tuple[list[str], int, bool, int]:
     lines = [f"- Thread[{thread_index}] {thread_id}"]
     visible_comments = 0
     minimized_hidden_count = 0
     minimized_reasons: set[str] = set()
     has_clipped_diff_hunk = False
+    details_collapsed_count = 0
     for comment_index, raw_comment in enumerate(comments, start=1):
         comment = _as_dict(raw_comment, context="review comment")
         is_minimized = bool(comment.get("isMinimized"))
@@ -1514,17 +1543,19 @@ def _render_review_thread_block(
             if is_minimized:
                 minimized_reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
             continue
-        comment_lines, comment_has_clipped_diff_hunk = _render_review_comment_block(
+        comment_lines, comment_has_clipped_diff_hunk, comment_details_collapsed_count = _render_review_comment_block(
             comment=comment,
             index=comment_index,
             include_diff_hunk=(comment_index == 1),
             ref=ref,
             viewer_login=viewer_login,
+            show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
         )
         lines.extend(comment_lines)
         visible_comments += 1
         has_clipped_diff_hunk = has_clipped_diff_hunk or comment_has_clipped_diff_hunk
+        details_collapsed_count += comment_details_collapsed_count
     if minimized_hidden_count > 0:
         reason_text = ", ".join(sorted(minimized_reasons))
         lines.append(f"  ... {minimized_hidden_count} hidden review comments (reason: {reason_text}).")
@@ -1541,7 +1572,7 @@ def _render_review_thread_block(
         lines.append(
             f"  ⏎ Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
         )
-    return lines, visible_comments, has_clipped_diff_hunk
+    return lines, visible_comments, has_clipped_diff_hunk, details_collapsed_count
 
 
 def _build_review_minimized_summary(
@@ -1588,8 +1619,9 @@ def _render_review_comment_block(
     include_diff_hunk: bool = True,
     ref: PullRequestRef,
     viewer_login: str,
+    show_details_blocks: bool,
     diff_hunk_lines: int | None,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], bool, int]:
     path = _as_optional_str(comment.get("path")) or "(unknown path)"
     line = _as_line_ref(comment)
     author = _get_actor_display(comment.get("author"))
@@ -1600,6 +1632,9 @@ def _render_review_comment_block(
     rendered_body = _strip_suggestion_blocks(body).strip()
     if not rendered_body and not suggestion_lines:
         rendered_body = body
+    details_collapsed_count = 0
+    if rendered_body and not show_details_blocks:
+        rendered_body, details_collapsed_count = _collapse_details_blocks(rendered_body)
 
     lines = [f"- [{index}] {path}{line} by @{author} at {created_at}"]
     if rendered_body:
@@ -1637,7 +1672,7 @@ def _render_review_comment_block(
 
     if not body and not diff_hunk:
         lines.append("  (empty review comment)")
-    return lines, has_clipped_diff_hunk
+    return lines, has_clipped_diff_hunk, details_collapsed_count
 
 
 def _clip_diff_hunk_lines(diff_hunk: str, max_lines: int) -> tuple[str, bool, int, int]:
@@ -1731,6 +1766,28 @@ def _strip_suggestion_blocks(text: str) -> str:
         if not in_suggestion:
             out.append(line.rstrip())
     return "\n".join(out)
+
+
+def _collapse_details_blocks(text: str | None) -> tuple[str, int]:
+    if not text:
+        return "", 0
+    count = 0
+
+    def repl(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        block = match.group(1) or ""
+        summary_match = SUMMARY_RE.search(block)
+        summary = _strip_html_tags(summary_match.group(1) if summary_match else "") or "details"
+        return f"\n<details>\n<summary>{summary}</summary>\n(details body collapsed)\n</details>\n"
+
+    collapsed = DETAILS_BLOCK_RE.sub(repl, text)
+    return collapsed, count
+
+
+def _strip_html_tags(text: str) -> str:
+    no_tags = HTML_TAG_RE.sub("", text or "")
+    return " ".join(no_tags.split())
 
 
 def _parse_datetime(value: str | None) -> datetime:
