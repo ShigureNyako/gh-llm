@@ -16,11 +16,10 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def test_extension_entrypoint_forwards_to_uvx_from_repo(tmp_path: Path) -> None:
+def test_extension_entrypoint_forwards_to_uv_from_repo(tmp_path: Path) -> None:
     repo_root = _repo_root()
     script = repo_root / "gh-llm"
     fake_uv = tmp_path / "uv"
-    fake_uvx = tmp_path / "uvx"
     captured = tmp_path / "captured.txt"
     fake_stdout = tmp_path / "out.txt"
 
@@ -30,19 +29,8 @@ def test_extension_entrypoint_forwards_to_uvx_from_repo(tmp_path: Path) -> None:
             [
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
-                "exit 0",
-            ]
-        )
-        + "\n",
-    )
-    _write_executable(
-        fake_uvx,
-        "\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -euo pipefail",
                 'echo "$@" > "$UV_FAKE_CAPTURE_FILE"',
-                'echo "uvx-called" > "$UV_FAKE_STDOUT_FILE"',
+                'echo "uv-called" > "$UV_FAKE_STDOUT_FILE"',
             ]
         )
         + "\n",
@@ -65,9 +53,9 @@ def test_extension_entrypoint_forwards_to_uvx_from_repo(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert completed.stdout.strip() == ""
     assert completed.stderr.strip() == ""
-    assert fake_stdout.read_text(encoding="utf-8").strip() == "uvx-called"
+    assert fake_stdout.read_text(encoding="utf-8").strip() == "uv-called"
     forwarded = captured.read_text(encoding="utf-8").strip()
-    assert forwarded.startswith("--from ")
+    assert forwarded.startswith("run --project ")
     assert " gh-llm --help" in forwarded
     assert str(repo_root) in forwarded
 
