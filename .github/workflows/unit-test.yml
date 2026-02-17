@@ -41,3 +41,10 @@ jobs:
       - name: unit test
         run: |
           just ci-test
+
+      - name: e2e extension entrypoint
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+          UV_TOOL_DIR: /tmp/uv-tools
+        run: |
+          ./gh-llm --help

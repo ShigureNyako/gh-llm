@@ -4,6 +4,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from gh_llm.github_api import GitHubClient
+from gh_llm.invocation import display_command_with
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
     render_checks_section,
@@ -460,15 +461,14 @@ def cmd_pr_review_start(args: Any) -> int:
     print(f"PR: {meta.ref.number} ({repo})")
     print(f"Total hunks: {len(hunks)}")
     print(f"Δ full diff: `gh pr diff {meta.ref.number} --repo {repo}`")
-    print(
-        "Comment template: `gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' "
-        f"--pr {meta.ref.number} --repo {repo}`"
+    comment_template_cmd = display_command_with(
+        f"pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
     )
-    print(
-        "Suggestion template: `gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT "
-        "--body '<reason>' --suggestion '<replacement>' "
-        f"--pr {meta.ref.number} --repo {repo}`"
+    suggestion_template_cmd = display_command_with(
+        f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
     )
+    print(f"Comment template: `{comment_template_cmd}`")
+    print(f"Suggestion template: `{suggestion_template_cmd}`")
     print()
 
     if not visible:
@@ -480,12 +480,14 @@ def cmd_pr_review_start(args: Any) -> int:
         print(f"File: {hunk.path}")
         print(f"Header: {hunk.header}")
         print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")
-        print(
-            f"⏎ comment: `gh-llm pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}`"
+        comment_cmd = display_command_with(
+            f"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
         )
-        print(
-            f"⏎ suggest: `gh-llm pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}`"
+        suggest_cmd = display_command_with(
+            f"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
         )
+        print(f"⏎ comment: `{comment_cmd}`")
+        print(f"⏎ suggest: `{suggest_cmd}`")
         print("```diff")
         for line in hunk.lines:
             print(line)

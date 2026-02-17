@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import cast
 from urllib.parse import urlparse
 
+from gh_llm.invocation import display_command, display_command_with
 from gh_llm.models import CheckItem, PageInfo, PullRequestMeta, PullRequestRef, TimelineEvent, TimelinePage
 
 MAX_INLINE_TEXT = 8000
@@ -1254,13 +1255,15 @@ def _parse_node(
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"referenced by PR #{source_number} {detail} ({source_repo})")
-            summary_lines.append(f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`")
+            summary_lines.append(f"⏎ view: `{display_command_with(f'pr view {source_number} --repo {source_repo}')}`")
         elif subject is not None and subject.type == "Issue":
             source_number = subject.number
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"referenced by issue #{source_number} {detail} ({source_repo})")
-            summary_lines.append(f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`")
+            summary_lines.append(
+                f"⏎ view (reserved): `{display_command_with(f'issue view {source_number} --repo {source_repo}')}`"
+            )
         else:
             summary_lines.append("referenced by another item")
         if is_cross:
@@ -1285,13 +1288,15 @@ def _parse_node(
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"cross-referenced by PR #{source_number} {detail} ({source_repo})")
-            summary_lines.append(f"⏎ view: `gh-llm pr view {source_number} --repo {source_repo}`")
+            summary_lines.append(f"⏎ view: `{display_command_with(f'pr view {source_number} --repo {source_repo}')}`")
         elif subject is not None and subject.type == "Issue":
             source_number = subject.number
             source_repo = subject.repo
             detail = subject.detail
             summary_lines.append(f"cross-referenced by issue #{source_number} {detail} ({source_repo})")
-            summary_lines.append(f"⏎ view (reserved): `gh-llm issue view {source_number} --repo {source_repo}`")
+            summary_lines.append(
+                f"⏎ view (reserved): `{display_command_with(f'issue view {source_number} --repo {source_repo}')}`"
+            )
         else:
             summary_lines.append("cross-referenced by another item")
         if is_cross:
@@ -1559,19 +1564,20 @@ def _render_review_thread_block(
     if minimized_hidden_count > 0:
         reason_text = ", ".join(sorted(minimized_reasons))
         lines.append(f"  ... {minimized_hidden_count} hidden review comments (reason: {reason_text}).")
+    reply_cmd = display_command_with(
+        f"pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}"
+    )
+    unresolve_cmd = display_command_with(
+        f"pr thread-unresolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}"
+    )
+    resolve_cmd = display_command_with(f"pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}")
     lines.append(f"  ◌ thread_id: {thread_id}")
     lines.append("  ⌨ reply_body: '<reply>'")
-    lines.append(
-        f"  ⏎ Reply via gh-llm: `gh-llm pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
-    )
+    lines.append(f"  ⏎ Reply via {display_command()}: `{reply_cmd}`")
     if is_resolved:
-        lines.append(
-            f"  ⏎ Unresolve via gh-llm: `gh-llm pr thread-unresolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
-        )
+        lines.append(f"  ⏎ Unresolve via {display_command()}: `{unresolve_cmd}`")
     else:
-        lines.append(
-            f"  ⏎ Resolve via gh-llm: `gh-llm pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}`"
-        )
+        lines.append(f"  ⏎ Resolve via {display_command()}: `{resolve_cmd}`")
     return lines, visible_comments, has_clipped_diff_hunk, details_collapsed_count
 
 
@@ -1664,11 +1670,12 @@ def _render_review_comment_block(
         lines.append(f"  Reactions: {reactions_summary}")
     comment_id = _as_optional_str(comment.get("id")) or ""
     if comment_id and author == viewer_login:
+        edit_cmd = display_command_with(
+            f"pr comment-edit {comment_id} --body '<comment_body>' --pr {ref.number} --repo {ref.owner}/{ref.name}"
+        )
         lines.append(f"  ◌ comment_id: {comment_id}")
         lines.append("  ⌨ comment_body: '<comment_body>'")
-        lines.append(
-            f"  ⏎ Edit comment via gh-llm: `gh-llm pr comment-edit {comment_id} --body '<comment_body>' --pr {ref.number} --repo {ref.owner}/{ref.name}`"
-        )
+        lines.append(f"  ⏎ Edit comment via {display_command()}: `{edit_cmd}`")
 
     if not body and not diff_hunk:
         lines.append("  (empty review comment)")

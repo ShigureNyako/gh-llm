@@ -1020,6 +1020,20 @@ def _events() -> list[dict[str, Any]]:
     return _base_events()
 
 
+def test_display_command_env_is_used_in_actions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "gh llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
+    assert "gh llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
+
+
 TEST_BASE_PAGE_SIZE = 2
 
 

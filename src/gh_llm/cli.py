@@ -10,6 +10,7 @@ from gh_llm.commands.pr import (
     parse_review_ids as _parse_review_ids,
     register_pr_parser,
 )
+from gh_llm.invocation import detect_prog_name
 
 
 def run(argv: list[str]) -> int:
@@ -30,7 +31,7 @@ def run(argv: list[str]) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="gh-llm",
+        prog=detect_prog_name(sys.argv[0]),
         description="LLM-friendly GitHub pull request timeline viewer",
     )
     parser.add_argument("-v", "--version", action="version", version=__version__)

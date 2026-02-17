@@ -5,6 +5,8 @@ import re
 from datetime import UTC
 from typing import TYPE_CHECKING
 
+from gh_llm.invocation import display_command, display_command_with
+
 if TYPE_CHECKING:
     from string.templatelib import Template
 
@@ -142,7 +144,7 @@ def render_checks_section(
     if not is_open:
         return [
             "## Checks",
-            f"Closed PR: checks are hidden by default. ⏎ run `gh-llm pr checks --pr {context.number} --repo {repo} --all`",
+            f"Closed PR: checks are hidden by default. ⏎ run `{display_command_with(f'pr checks --pr {context.number} --repo {repo} --all')}`",
             "",
         ]
 
@@ -167,13 +169,15 @@ def render_checks_section(
             elif item.details_url:
                 lines.append(f"   ⏎ details: `{item.details_url}`")
     if show_all:
-        lines.append(f"⏎ show only non-passed: `gh-llm pr checks --pr {context.number} --repo {repo}`")
+        lines.append(
+            f"⏎ show only non-passed: `{display_command_with(f'pr checks --pr {context.number} --repo {repo}')}`"
+        )
     elif hidden_count > 0:
         lines.append(
-            f"{hidden_count} passed checks hidden. ⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`"
+            f"{hidden_count} passed checks hidden. ⏎ show all: `{display_command_with(f'pr checks --pr {context.number} --repo {repo} --all')}`"
         )
     else:
-        lines.append(f"⏎ show all: `gh-llm pr checks --pr {context.number} --repo {repo} --all`")
+        lines.append(f"⏎ show all: `{display_command_with(f'pr checks --pr {context.number} --repo {repo} --all')}`")
     lines.append("")
     return lines
 
@@ -193,7 +197,7 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
         hidden_label,
         *[
             _render_template(
-                t"- ⏎ `gh-llm {context.kind} timeline-expand {page} --{selector_name} {context.number} --repo {repo}`"
+                t"- ⏎ `{display_command_with(f'{context.kind} timeline-expand {page} --{selector_name} {context.number} --repo {repo}')}`"
             )
             for page in hidden_pages
         ],
@@ -204,7 +208,10 @@ def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list
 def _render_item(index: int, event: TimelineEvent, context: TimelineContext, command_group: str) -> list[str]:
     timestamp = event.timestamp.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     selector_name = "issue" if command_group == "issue" else "pr"
-    details_action = f"⏎ run `gh-llm {command_group} details-expand {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}`"
+    details_expand_cmd = display_command_with(
+        f"{command_group} details-expand {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}"
+    )
+    details_action = f"⏎ run `{details_expand_cmd}`"
     display_summary = (event.summary or "").replace(
         "(details body collapsed)",
         f"(details body collapsed; {details_action})",
@@ -216,35 +223,36 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
         if event.reactions_summary:
             lines.append(f"   Reactions: {event.reactions_summary}")
         if event.editable_comment_id:
+            edit_cmd = display_command_with(
+                f"{command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}"
+            )
             lines.append(f"   ◌ comment_id: {event.editable_comment_id}")
             lines.append("   ⌨ comment_body: '<comment_body>'")
-            lines.append(
-                f"   ⏎ Edit comment via gh-llm: `gh-llm {command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}`"
-            )
+            lines.append(f"   ⏎ Edit comment via {display_command()}: `{edit_cmd}`")
     else:
         lines.extend(_indent_block(display_summary))
     if event.resolved_hidden_count > 0:
         repo = f"{context.owner}/{context.name}"
         lines.append(
             f"   {event.resolved_hidden_count} resolved review comments are collapsed; "
-            f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
+            f"⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {repo}')}`"
         )
     if event.minimized_hidden_count > 0:
         repo = f"{context.owner}/{context.name}"
         reason_suffix = f" (reason: {event.minimized_hidden_reasons})" if event.minimized_hidden_reasons else ""
         lines.append(
             f"   {event.minimized_hidden_count} hidden review comments are collapsed{reason_suffix}; "
-            f"⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {repo}`"
+            f"⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {repo}')}`"
         )
     if event.kind.startswith("review/"):
         detail_text = (event.full_text or event.summary or "").lower()
         if "diff hunk clipped" in detail_text:
             lines.append(
-                f"   ⏎ run `gh-llm pr review-expand {event.source_id} --pr {context.number} --repo {context.owner}/{context.name} --diff-hunk-lines 0` for full diff hunk context"
+                f"   ⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {context.owner}/{context.name} --diff-hunk-lines 0')}` for full diff hunk context"
             )
     if event.is_truncated:
         lines.append(
-            f"   ⏎ run `gh-llm {command_group} event {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}` for full content"
+            f"   ⏎ run `{display_command_with(f'{command_group} event {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}')}` for full content"
         )
     if event.kind == "push/commit":
         lines.append(
