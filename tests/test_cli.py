@@ -30,16 +30,23 @@ class GhResponder:
         self.calls.append(cmd)
 
         if cmd[:3] == ["gh", "pr", "view"]:
+            pr_number = self._extract_pr_number(cmd)
+            state = "OPEN"
+            if pr_number == 77827:
+                state = "CLOSED"
+            elif pr_number == 77960:
+                state = "MERGED"
             return FakeCompletedProcess(
                 json.dumps(
                     {
-                        "number": 77928,
+                        "number": pr_number,
                         "title": "Timeline test",
-                        "url": "https://github.com/PaddlePaddle/Paddle/pull/77928",
+                        "url": f"https://github.com/PaddlePaddle/Paddle/pull/{pr_number}",
                         "author": {"login": "ShigureNyako"},
-                        "state": "OPEN",
+                        "state": state,
                         "isDraft": False,
                         "body": "This is PR description",
+                        "updatedAt": "2026-02-16T09:00:00Z",
                         "reactionGroups": [{"content": "ROCKET", "users": {"totalCount": 1}}],
                     }
                 )
@@ -166,6 +173,61 @@ class GhResponder:
             )
 
         if "pullRequest(number:$number){" in query and "id" in query and "timelineItems" not in query:
+            if "headRefName" in query and "headRepository" in query:
+                pr_number = _extract_field_int(cmd, "number")
+                if pr_number == 77827:
+                    return FakeCompletedProcess(
+                        json.dumps(
+                            {
+                                "data": {
+                                    "repository": {
+                                        "pullRequest": {
+                                            "id": "PR_kwDOA-qtos5closed",
+                                            "merged": False,
+                                            "headRefName": "feature/keep-branch",
+                                            "headRefOid": "1111111111111111111111111111111111111111",
+                                            "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    )
+                if pr_number == 77960:
+                    return FakeCompletedProcess(
+                        json.dumps(
+                            {
+                                "data": {
+                                    "repository": {
+                                        "pullRequest": {
+                                            "id": "PR_kwDOA-qtos5merged",
+                                            "merged": True,
+                                            "headRefName": "feature/deleted-branch",
+                                            "headRefOid": "2222222222222222222222222222222222222222",
+                                            "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    )
+                return FakeCompletedProcess(
+                    json.dumps(
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        "id": "PR_kwDOA-qtos5xxxx",
+                                        "merged": False,
+                                        "headRefName": "feature/open-branch",
+                                        "headRefOid": "3333333333333333333333333333333333333333",
+                                        "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+                                    }
+                                }
+                            }
+                        }
+                    )
+                )
             return FakeCompletedProcess(
                 json.dumps(
                     {
@@ -179,6 +241,12 @@ class GhResponder:
                     }
                 )
             )
+
+        if "ref(qualifiedName:$qualifiedName)" in query:
+            qualified = _extract_field(cmd, "qualifiedName")
+            if qualified == "refs/heads/feature/deleted-branch":
+                return FakeCompletedProcess(json.dumps({"data": {"repository": {"ref": None}}}))
+            return FakeCompletedProcess(json.dumps({"data": {"repository": {"ref": {"id": "REF_kwDOA-qtos5yyyy"}}}}))
 
         if "updatePullRequestReviewComment" in query:
             return FakeCompletedProcess(
@@ -212,6 +280,15 @@ class GhResponder:
             return FakeCompletedProcess(json.dumps(payload))
         payload = _backward_page_payload(page_size=first, before=before)
         return FakeCompletedProcess(json.dumps(payload))
+
+    @staticmethod
+    def _extract_pr_number(cmd: list[str]) -> int:
+        for token in cmd[3:]:
+            if token.startswith("-"):
+                continue
+            if token.isdigit():
+                return int(token)
+        return 77928
 
 
 def test_version() -> None:
@@ -1129,6 +1206,38 @@ def test_issue_view_show_summary_only(monkeypatch: pytest.MonkeyPatch, capsys: p
     assert "## Description" in out
     assert "## Timeline Page" not in out
     assert "## Actions" not in out
+
+
+def test_pr_actions_for_closed_unmerged_show_reopen_and_branch_delete(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77827", "--repo", "PaddlePaddle/Paddle", "--show", "actions"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Reopen PR via gh: `gh pr reopen 77827 --repo PaddlePaddle/Paddle`" in out
+    assert "Close PR via gh:" not in out
+    assert (
+        "Delete head branch via gh: `gh api -X DELETE repos/PaddlePaddle/Paddle/git/refs/heads/feature/keep-branch`"
+        in out
+    )
+    assert "Restore head branch via gh:" not in out
+
+
+def test_pr_actions_for_closed_merged_show_branch_restore_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77960", "--repo", "PaddlePaddle/Paddle", "--show", "actions"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Close PR via gh:" not in out
+    assert "Reopen PR via gh:" not in out
+    assert "Delete head branch via gh:" not in out
+    assert "Restore head branch via gh:" in out
+    assert "gh api repos/PaddlePaddle/Paddle/git/refs -X POST" in out
 
 
 def test_pr_view_invalid_expand_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:

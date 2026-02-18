@@ -58,6 +58,12 @@ class TimelinePager:
             kind=meta.kind,
             pr_reactions_summary=meta.reactions_summary,
             can_edit_pr_body=meta.can_edit_body,
+            is_merged=meta.is_merged,
+            head_ref_name=meta.head_ref_name,
+            head_ref_repo=meta.head_ref_repo,
+            head_ref_oid=meta.head_ref_oid,
+            head_ref_deleted=meta.head_ref_deleted,
+            pr_node_id=meta.node_id,
             forward_after_by_page={1: None},
             backward_before_by_page={total_pages: None},
         )

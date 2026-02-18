@@ -24,7 +24,7 @@ def render_header(context: TimelineContext) -> list[str]:
 def render_frontmatter(context: TimelineContext) -> list[str]:
     is_issue = context.kind == "issue"
     key = "issue" if is_issue else "pr"
-    return [
+    lines = [
         "---",
         f"{key}: {context.number}",
         f"repo: {context.owner}/{context.name}",
@@ -37,8 +37,19 @@ def render_frontmatter(context: TimelineContext) -> list[str]:
         f"timeline_events: {context.total_count}",
         f"page_size: {context.page_size}",
         f"total_pages: {context.total_pages}",
-        "---",
     ]
+    if context.kind == "pr":
+        lines.append(f"is_merged: {str(context.is_merged).lower()}")
+        if context.head_ref_repo:
+            lines.append(f"head_ref_repo: {context.head_ref_repo}")
+        if context.head_ref_name:
+            lines.append(f"head_ref_name: {context.head_ref_name}")
+        if context.head_ref_oid:
+            lines.append(f"head_ref_oid: {context.head_ref_oid}")
+        if context.head_ref_deleted is not None:
+            lines.append(f"head_ref_deleted: {str(context.head_ref_deleted).lower()}")
+    lines.append("---")
+    return lines
 
 
 def render_diff_actions(context: TimelineContext) -> list[str]:
@@ -108,11 +119,34 @@ def render_pr_actions(context: TimelineContext, *, include_diff: bool = True, in
     if include_diff:
         lines.extend(render_diff_actions(context))
     if include_manage:
+        close_or_reopen_lines: list[str] = []
+        if context.state == "OPEN":
+            close_or_reopen_lines.append(f"⏎ Close PR via gh: `gh pr close {context.number} --repo {repo}`")
+        elif context.state == "CLOSED" and not context.is_merged:
+            close_or_reopen_lines.append(f"⏎ Reopen PR via gh: `gh pr reopen {context.number} --repo {repo}`")
+
+        branch_lines: list[str] = []
+        if context.state in {"CLOSED", "MERGED"}:
+            if (
+                context.head_ref_deleted is True
+                and context.head_ref_repo
+                and context.head_ref_name
+                and context.head_ref_oid
+            ):
+                branch_lines.append(
+                    "⏎ Restore head branch via gh: "
+                    f"`gh api repos/{context.head_ref_repo}/git/refs -X POST -f ref='refs/heads/{context.head_ref_name}' -f sha={context.head_ref_oid}`"
+                )
+            elif context.head_ref_deleted is False and context.head_ref_name and context.head_ref_repo:
+                branch_lines.append(
+                    f"⏎ Delete head branch via gh: `gh api -X DELETE repos/{context.head_ref_repo}/git/refs/heads/{context.head_ref_name}`"
+                )
+
         lines.extend(
             [
                 "⌨ comment_body: '<comment_body>'",
                 f"⏎ Comment via gh: `gh pr comment {context.number} --repo {repo} --body '<comment_body>'`",
-                f"⏎ Close PR via gh: `gh pr close {context.number} --repo {repo}`",
+                *close_or_reopen_lines,
                 "⌨ labels_csv: '<label1>,<label2>'",
                 f"⏎ Add labels via gh: `gh pr edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
                 f"⏎ Remove labels via gh: `gh pr edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
@@ -120,6 +154,7 @@ def render_pr_actions(context: TimelineContext, *, include_diff: bool = True, in
                 f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
                 "⌨ assignees_csv: '<assignee1>,<assignee2>'",
                 f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
+                *branch_lines,
             ]
         )
     return lines

@@ -488,6 +488,30 @@ mutation($pullRequestId:ID!,$path:String!,$line:Int!,$side:DiffSide!,$body:Strin
 }
 """.strip()
 
+PULL_REQUEST_ACTIONS_META_QUERY = """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    pullRequest(number:$number){
+      id
+      merged
+      headRefName
+      headRefOid
+      headRepository{nameWithOwner}
+    }
+  }
+}
+""".strip()
+
+REPOSITORY_REF_EXISTS_QUERY = """
+query($owner:String!,$name:String!,$qualifiedName:String!){
+  repository(owner:$owner,name:$name){
+    ref(qualifiedName:$qualifiedName){
+      id
+    }
+  }
+}
+""".strip()
+
 
 class GitHubClient:
     def __init__(self) -> None:
@@ -529,6 +553,16 @@ class GitHubClient:
         if self._viewer_login is None:
             self._viewer_login = self._get_viewer_login()
         can_edit_body = author == (self._viewer_login or "")
+        pr_meta = self._fetch_pull_request_actions_meta(ref)
+        pr_node_id = _as_optional_str(pr_meta.get("id"))
+        is_merged = bool(pr_meta.get("merged"))
+        head_ref_name = _as_optional_str(pr_meta.get("headRefName"))
+        head_repo_obj = _as_dict_optional(pr_meta.get("headRepository"))
+        head_repo = _as_optional_str(head_repo_obj.get("nameWithOwner")) if head_repo_obj else None
+        head_ref_oid = _as_optional_str(pr_meta.get("headRefOid"))
+        head_ref_deleted: bool | None = None
+        if state in {"CLOSED", "MERGED"}:
+            head_ref_deleted = self._is_head_ref_deleted(head_repo=head_repo, head_ref_name=head_ref_name)
         return PullRequestMeta(
             ref=ref,
             title=title,
@@ -541,6 +575,12 @@ class GitHubClient:
             kind="pr",
             reactions_summary=reactions_summary,
             can_edit_body=can_edit_body,
+            is_merged=is_merged,
+            head_ref_name=head_ref_name,
+            head_ref_repo=head_repo,
+            head_ref_oid=head_ref_oid,
+            head_ref_deleted=head_ref_deleted,
+            node_id=pr_node_id,
         )
 
     def resolve_issue(self, selector: str | None, repo: str | None) -> PullRequestMeta:
@@ -1009,6 +1049,29 @@ mutation($id:ID!,$body:String!){
         if not pr_id:
             raise RuntimeError("failed to resolve pull request node id")
         return pr_id
+
+    def _fetch_pull_request_actions_meta(self, ref: PullRequestRef) -> dict[str, object]:
+        payload = _run_graphql_payload(
+            PULL_REQUEST_ACTIONS_META_QUERY,
+            {"owner": ref.owner, "name": ref.name, "number": ref.number},
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        return _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+
+    def _is_head_ref_deleted(self, *, head_repo: str | None, head_ref_name: str | None) -> bool:
+        if not head_repo or not head_ref_name:
+            return True
+        if "/" not in head_repo:
+            return True
+        owner, name = head_repo.split("/", 1)
+        payload = _run_graphql_payload(
+            REPOSITORY_REF_EXISTS_QUERY,
+            {"owner": owner, "name": name, "qualifiedName": f"refs/heads/{head_ref_name}"},
+        )
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        return repo_obj.get("ref") is None
 
 
 def _run_graphql_connection(

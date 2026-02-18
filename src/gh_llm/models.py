@@ -27,6 +27,12 @@ class PullRequestMeta:
     kind: str = "pr"
     reactions_summary: str | None = None
     can_edit_body: bool = False
+    is_merged: bool = False
+    head_ref_name: str | None = None
+    head_ref_repo: str | None = None
+    head_ref_oid: str | None = None
+    head_ref_deleted: bool | None = None
+    node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,12 @@ class TimelineContext:
     kind: str = "pr"
     pr_reactions_summary: str | None = None
     can_edit_pr_body: bool = False
+    is_merged: bool = False
+    head_ref_name: str | None = None
+    head_ref_repo: str | None = None
+    head_ref_oid: str | None = None
+    head_ref_deleted: bool | None = None
+    pr_node_id: str | None = None
     forward_after_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
     backward_before_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
 
@@ -111,6 +123,12 @@ class TimelineContext:
             "kind": self.kind,
             "pr_reactions_summary": self.pr_reactions_summary,
             "can_edit_pr_body": self.can_edit_pr_body,
+            "is_merged": self.is_merged,
+            "head_ref_name": self.head_ref_name,
+            "head_ref_repo": self.head_ref_repo,
+            "head_ref_oid": self.head_ref_oid,
+            "head_ref_deleted": self.head_ref_deleted,
+            "pr_node_id": self.pr_node_id,
             "forward_after_by_page": {str(k): v for k, v in self.forward_after_by_page.items()},
             "backward_before_by_page": {str(k): v for k, v in self.backward_before_by_page.items()},
         }
@@ -134,6 +152,12 @@ class TimelineContext:
             kind=_as_str(value.get("kind"), "pr"),
             pr_reactions_summary=_as_str_optional(value.get("pr_reactions_summary")),
             can_edit_pr_body=bool(value.get("can_edit_pr_body")),
+            is_merged=bool(value.get("is_merged")),
+            head_ref_name=_as_str_optional(value.get("head_ref_name")),
+            head_ref_repo=_as_str_optional(value.get("head_ref_repo")),
+            head_ref_oid=_as_str_optional(value.get("head_ref_oid")),
+            head_ref_deleted=(None if value.get("head_ref_deleted") is None else bool(value.get("head_ref_deleted"))),
+            pr_node_id=_as_str_optional(value.get("pr_node_id")),
             forward_after_by_page={
                 int(k): None if v is None else str(v)
                 for k, v in _ensure_dict(value.get("forward_after_by_page")).items()
