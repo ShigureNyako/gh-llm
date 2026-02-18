@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class _ExpandOptions:
-    hidden: bool = False
+    minimized: bool = False
     details: bool = False
 
 
@@ -57,7 +57,7 @@ def register_issue_parser(subparsers: Any) -> None:
         "--expand",
         action="append",
         default=[],
-        help="auto-expand folded content: hidden, details, all (comma-separated or repeatable)",
+        help="auto-expand folded content: minimized, details, all (comma-separated or repeatable)",
     )
     view_parser.set_defaults(handler=cmd_issue_view)
 
@@ -70,7 +70,7 @@ def register_issue_parser(subparsers: Any) -> None:
         "--expand",
         action="append",
         default=[],
-        help="auto-expand folded content: hidden, details, all (comma-separated or repeatable)",
+        help="auto-expand folded content: minimized, details, all (comma-separated or repeatable)",
     )
     timeline_expand_parser.set_defaults(handler=cmd_issue_timeline_expand)
 
@@ -110,7 +110,7 @@ def cmd_issue_view(args: Any) -> int:
     context, first_page, last_page = pager.build_initial(
         meta,
         page_size=page_size,
-        show_minimized_details=expand.hidden,
+        show_minimized_details=expand.minimized,
         show_details_blocks=expand.details,
     )
     shown_pages: set[int] = {1}
@@ -132,6 +132,7 @@ def cmd_issue_view(args: Any) -> int:
     if show.description:
         print_block(render_description(context))
     if show.timeline:
+        print_block(["## Timeline"])
         print_block(render_page(1, context, first_page))
 
     if show.timeline and last_page is not None:
@@ -143,7 +144,7 @@ def cmd_issue_view(args: Any) -> int:
                 meta=meta,
                 context=context,
                 page=previous_page_number,
-                show_minimized_details=expand.hidden,
+                show_minimized_details=expand.minimized,
                 show_details_blocks=expand.details,
             )
             trailing_pages.append((previous_page_number, previous_page))
@@ -183,12 +184,13 @@ def cmd_issue_timeline_expand(args: Any) -> int:
         meta=meta,
         context=context,
         page=int(args.page),
-        show_minimized_details=expand.hidden,
+        show_minimized_details=expand.minimized,
         show_details_blocks=expand.details,
     )
 
     for line in render_header(context):
         print(line)
+    print("## Timeline")
     for line in render_page(int(args.page), context, page):
         print(line)
 
@@ -278,21 +280,17 @@ def _resolve_context_and_meta(
 
 
 def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
-    hidden = False
+    minimized = False
     details = False
 
     aliases: dict[str, str] = {
-        "hidden": "hidden",
-        "hidden_comments": "hidden",
-        "hidden-comments": "hidden",
-        "minimized": "hidden",
-        "outdated": "hidden",
+        "minimized": "minimized",
         "details": "details",
         "detail": "details",
         "all": "all",
         "*": "all",
     }
-    valid_values = ["hidden", "details", "all"]
+    valid_values = ["minimized", "details", "all"]
     alias_values = [alias for alias in aliases if alias not in valid_values and alias != "*"]
 
     for raw in raw_values:
@@ -309,15 +307,15 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
                     alias_values=alias_values,
                 )
             if normalized == "all":
-                hidden = True
+                minimized = True
                 details = True
                 continue
-            if normalized == "hidden":
-                hidden = True
+            if normalized == "minimized":
+                minimized = True
             elif normalized == "details":
                 details = True
 
-    return _ExpandOptions(hidden=hidden, details=details)
+    return _ExpandOptions(minimized=minimized, details=details)
 
 
 def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:

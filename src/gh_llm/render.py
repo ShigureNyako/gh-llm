@@ -93,7 +93,7 @@ def render_description(context: TimelineContext) -> list[str]:
 
 
 def render_page(page_number: int, context: TimelineContext, page: TimelinePage) -> list[str]:
-    lines = [f"## Timeline Page {page_number}/{context.total_pages}"]
+    lines = [f"### Page {page_number}/{context.total_pages}"]
     if not page.items:
         lines.append("(no timeline events)")
         return lines

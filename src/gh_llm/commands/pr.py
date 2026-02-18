@@ -30,7 +30,8 @@ DEFAULT_DIFF_HUNK_LINES = 12
 @dataclass(frozen=True)
 class _ExpandOptions:
     resolved: bool = False
-    hidden: bool = False
+    outdated: bool = False
+    minimized: bool = False
     details: bool = False
 
 
@@ -64,7 +65,7 @@ def register_pr_parser(subparsers: Any) -> None:
         "--expand",
         action="append",
         default=[],
-        help="auto-expand folded content: resolved, hidden, details, all (comma-separated or repeatable)",
+        help="auto-expand folded content: resolved, outdated, minimized, details, all (comma-separated or repeatable)",
     )
     view_parser.add_argument(
         "--diff-hunk-lines",
@@ -83,7 +84,7 @@ def register_pr_parser(subparsers: Any) -> None:
         "--expand",
         action="append",
         default=[],
-        help="auto-expand folded content: resolved, hidden, details, all (comma-separated or repeatable)",
+        help="auto-expand folded content: resolved, outdated, minimized, details, all (comma-separated or repeatable)",
     )
     timeline_expand_parser.add_argument(
         "--diff-hunk-lines",
@@ -240,7 +241,8 @@ def cmd_pr_view(args: Any) -> int:
         meta,
         page_size=page_size,
         show_resolved_details=expand.resolved,
-        show_minimized_details=expand.hidden,
+        show_outdated_details=expand.outdated,
+        show_minimized_details=expand.minimized,
         show_details_blocks=expand.details,
         diff_hunk_lines=diff_hunk_lines,
     )
@@ -263,6 +265,7 @@ def cmd_pr_view(args: Any) -> int:
     if show.description:
         print_block(render_description(context))
     if show.timeline:
+        print_block(["## Timeline"])
         print_block(render_page(1, context, first_page))
 
     if show.timeline and last_page is not None:
@@ -275,7 +278,8 @@ def cmd_pr_view(args: Any) -> int:
                 context=context,
                 page=previous_page_number,
                 show_resolved_details=expand.resolved,
-                show_minimized_details=expand.hidden,
+                show_outdated_details=expand.outdated,
+                show_minimized_details=expand.minimized,
                 show_details_blocks=expand.details,
                 diff_hunk_lines=diff_hunk_lines,
             )
@@ -334,13 +338,15 @@ def cmd_pr_timeline_expand(args: Any) -> int:
         context=context,
         page=int(args.page),
         show_resolved_details=expand.resolved,
-        show_minimized_details=expand.hidden,
+        show_outdated_details=expand.outdated,
+        show_minimized_details=expand.minimized,
         show_details_blocks=expand.details,
         diff_hunk_lines=diff_hunk_lines,
     )
 
     for line in render_header(context):
         print(line)
+    print("## Timeline")
     for line in render_page(int(args.page), context, page):
         print(line)
 
@@ -363,6 +369,7 @@ def cmd_pr_event(args: Any) -> int:
         context=context,
         page=page_number,
         show_resolved_details=True,
+        show_outdated_details=True,
         show_minimized_details=True,
         show_details_blocks=False,
         diff_hunk_lines=diff_hunk_lines,
@@ -393,6 +400,7 @@ def cmd_pr_details_expand(args: Any) -> int:
         context=context,
         page=page_number,
         show_resolved_details=True,
+        show_outdated_details=True,
         show_minimized_details=True,
         show_details_blocks=True,
         diff_hunk_lines=None,
@@ -425,6 +433,7 @@ def cmd_pr_review_expand(args: Any) -> int:
             context=context,
             page=page_number,
             show_resolved_details=True,
+            show_outdated_details=True,
             show_minimized_details=True,
             show_details_blocks=False,
             diff_hunk_lines=diff_hunk_lines,
@@ -660,7 +669,8 @@ def _resolve_diff_hunk_lines(*, args: Any, default: int) -> int | None:
 
 def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
     resolved = False
-    hidden = False
+    outdated = False
+    minimized = False
     details = False
 
     aliases: dict[str, str] = {
@@ -668,17 +678,14 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
         "resolve": "resolved",
         "resolved_comments": "resolved",
         "resolved-comments": "resolved",
-        "hidden": "hidden",
-        "hidden_comments": "hidden",
-        "hidden-comments": "hidden",
-        "minimized": "hidden",
-        "outdated": "hidden",
+        "outdated": "outdated",
+        "minimized": "minimized",
         "details": "details",
         "detail": "details",
         "all": "all",
         "*": "all",
     }
-    valid_values = ["resolved", "hidden", "details", "all"]
+    valid_values = ["resolved", "outdated", "minimized", "details", "all"]
     alias_values = [alias for alias in aliases if alias not in valid_values and alias != "*"]
 
     for raw in raw_values:
@@ -696,17 +703,20 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
                 )
             if normalized == "all":
                 resolved = True
-                hidden = True
+                outdated = True
+                minimized = True
                 details = True
                 continue
             if normalized == "resolved":
                 resolved = True
-            elif normalized == "hidden":
-                hidden = True
+            elif normalized == "outdated":
+                outdated = True
+            elif normalized == "minimized":
+                minimized = True
             elif normalized == "details":
                 details = True
 
-    return _ExpandOptions(resolved=resolved, hidden=hidden, details=details)
+    return _ExpandOptions(resolved=resolved, outdated=outdated, minimized=minimized, details=details)
 
 
 def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:

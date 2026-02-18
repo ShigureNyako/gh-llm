@@ -637,6 +637,7 @@ class GitHubClient:
         after: str | None,
         *,
         show_resolved_details: bool = False,
+        show_outdated_details: bool = False,
         show_minimized_details: bool = False,
         show_details_blocks: bool = False,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
@@ -662,6 +663,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
@@ -676,6 +678,7 @@ class GitHubClient:
         before: str | None,
         *,
         show_resolved_details: bool = False,
+        show_outdated_details: bool = False,
         show_minimized_details: bool = False,
         show_details_blocks: bool = False,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
@@ -701,6 +704,7 @@ class GitHubClient:
             ref=ref,
             threads_by_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
@@ -1165,6 +1169,7 @@ def _parse_timeline_page(
     ref: PullRequestRef,
     threads_by_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
     diff_hunk_lines: int | None,
@@ -1187,6 +1192,7 @@ def _parse_timeline_page(
             ref=ref,
             threads_for_review=threads_by_review,
             show_resolved_details=show_resolved_details,
+            show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
@@ -1206,6 +1212,7 @@ def _parse_node(
     ref: PullRequestRef,
     threads_for_review: dict[str, list[dict[str, object]]],
     show_resolved_details: bool,
+    show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
     diff_hunk_lines: int | None,
@@ -1264,6 +1271,7 @@ def _parse_node(
             state=state,
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
+            show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
             diff_hunk_lines=diff_hunk_lines,
@@ -1272,6 +1280,7 @@ def _parse_node(
         minimized_hidden_count, minimized_hidden_reasons = _build_review_minimized_summary(
             threads_for_review=threads_for_review.get(review_id, []),
             show_resolved_details=show_resolved_details,
+            show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
         )
         summary, is_truncated = _clip_text(full_review, f"review state: {state.lower()}")
@@ -1518,6 +1527,7 @@ def _build_review_text(
     *,
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
+    show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
     diff_hunk_lines: int | None,
@@ -1553,6 +1563,7 @@ def _build_review_text(
                 comments=comment_nodes,
                 ref=ref,
                 viewer_login=viewer_login,
+                show_outdated_details=show_outdated_details,
                 show_minimized_details=show_minimized_details,
                 show_details_blocks=show_details_blocks,
                 diff_hunk_lines=diff_hunk_lines,
@@ -1590,6 +1601,7 @@ def _render_review_thread_block(
     comments: list[object],
     ref: PullRequestRef,
     viewer_login: str,
+    show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
     diff_hunk_lines: int | None,
@@ -1604,11 +1616,13 @@ def _render_review_thread_block(
         comment = _as_dict(raw_comment, context="review comment")
         is_minimized = bool(comment.get("isMinimized"))
         is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
-        if (is_minimized or is_outdated) and not show_minimized_details:
+        hide_by_outdated = is_outdated and not show_outdated_details
+        hide_by_minimized = is_minimized and not show_minimized_details
+        if hide_by_outdated or hide_by_minimized:
             minimized_hidden_count += 1
-            if is_outdated:
+            if hide_by_outdated:
                 minimized_reasons.add("outdated")
-            if is_minimized:
+            if hide_by_minimized:
                 minimized_reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
             continue
         comment_lines, comment_has_clipped_diff_hunk, comment_details_collapsed_count = _render_review_comment_block(
@@ -1648,9 +1662,10 @@ def _build_review_minimized_summary(
     *,
     threads_for_review: list[dict[str, object]],
     show_resolved_details: bool,
+    show_outdated_details: bool,
     show_minimized_details: bool,
 ) -> tuple[int, str | None]:
-    if show_minimized_details:
+    if show_outdated_details and show_minimized_details:
         return 0, None
     reasons: set[str] = set()
     count = 0
@@ -1662,12 +1677,14 @@ def _build_review_minimized_summary(
             comment = _as_dict(raw_comment, context="review comment for minimized summary")
             is_minimized = bool(comment.get("isMinimized"))
             is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
-            if not (is_minimized or is_outdated):
+            hide_by_outdated = is_outdated and not show_outdated_details
+            hide_by_minimized = is_minimized and not show_minimized_details
+            if not (hide_by_outdated or hide_by_minimized):
                 continue
             count += 1
-            if is_outdated:
+            if hide_by_outdated:
                 reasons.add("outdated")
-            if is_minimized:
+            if hide_by_minimized:
                 reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
     if count == 0:
         return 0, None

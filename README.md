@@ -70,7 +70,7 @@ gh-llm pr view 77900 --repo PaddlePaddle/Paddle --show timeline,checks
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
 
 # Auto-expand folded content in default/timeline view
-gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,hidden
+gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,outdated,minimized
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle --expand all
 
 # Show full content for one event index
@@ -90,14 +90,14 @@ gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle
 gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
 gh-llm issue event 6 --issue 77924 --repo PaddlePaddle/Paddle
-gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand hidden,details
+gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand minimized,details
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```
 
 `--expand` values:
 
-- PR: `resolved`, `hidden`, `details`, `all`
-- Issue: `hidden`, `details`, `all`
+- PR: `resolved`, `outdated`, `minimized`, `details`, `all`
+- Issue: `minimized`, `details`, `all`
 - Supports comma-separated values and repeated flags.
 
 `--show` values:

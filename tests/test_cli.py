@@ -321,10 +321,10 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "Reactions: 🚀 x1" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --body '<pr_description_markdown>'" in out
     assert "Δ PR diff: `gh pr diff 77928 --repo PaddlePaddle/Paddle`" in out
-    assert "## Timeline Page 1/4" in out
+    assert "### Page 1/4" in out
     assert "Reactions: 👍 x2" in out
-    assert "## Timeline Page 3/4" in out
-    assert "## Timeline Page 4/4" in out
+    assert "### Page 3/4" in out
+    assert "### Page 4/4" in out
     assert "Hidden timeline page: 2" in out
     assert "---" in out
     assert "gh-llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
@@ -349,7 +349,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert code == 0
 
     out = capsys.readouterr().out
-    assert "## Timeline Page 2/4" in out
+    assert "### Page 2/4" in out
     assert "commit 2" in out
     assert (
         "Δ commit diff: `gh api repos/PaddlePaddle/Paddle/commits/oid-2 -H 'Accept: application/vnd.github.v3.diff'`"
@@ -359,7 +359,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     code = cli.run(["pr", "timeline-expand", "3", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Page 3/4" in out
+    assert "### Page 3/4" in out
     assert "(review hidden: outdated)" in out
     assert "Review comments (1/3 shown):" not in out
     assert "Thread[1] PRRT_mock_1" not in out
@@ -528,9 +528,9 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "Reactions: 👀 x1" in out
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --body '<issue_description_markdown>'" in out
     assert "## Diff Actions" not in out
-    assert "## Timeline Page 1/3" in out
-    assert "## Timeline Page 2/3" in out
-    assert "## Timeline Page 3/3" in out
+    assert "### Page 1/3" in out
+    assert "### Page 2/3" in out
+    assert "### Page 3/3" in out
     assert "Hidden timeline page" not in out
     assert "(comment hidden: outdated)" in out
     assert "run `gh-llm issue event 1 --issue 77924 --repo PaddlePaddle/Paddle` for full content" in out
@@ -553,7 +553,7 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     )
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Page 2/3" in out
+    assert "### Page 2/3" in out
 
     code = cli.run(["issue", "event", "1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
@@ -674,7 +674,7 @@ def test_graphql_eof_retries_with_backoff(
     code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Page 1/4" in out
+    assert "### Page 1/4" in out
     assert state["failed_once"] is True
 
 
@@ -1127,7 +1127,7 @@ def test_pr_timeline_expand_with_expand_option(
             "--page-size",
             "2",
             "--expand",
-            "resolved,hidden",
+            "resolved,outdated,minimized",
         ]
     )
     assert code == 0
@@ -1137,7 +1137,7 @@ def test_pr_timeline_expand_with_expand_option(
     assert "hidden review comments are collapsed" not in out
 
 
-def test_issue_timeline_expand_with_expand_hidden(
+def test_issue_timeline_expand_with_expand_minimized(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
@@ -1154,7 +1154,7 @@ def test_issue_timeline_expand_with_expand_hidden(
             "--page-size",
             "2",
             "--expand",
-            "hidden",
+            "minimized",
         ]
     )
     assert code == 0
@@ -1180,7 +1180,8 @@ def test_pr_view_show_timeline_only(monkeypatch: pytest.MonkeyPatch, capsys: pyt
     )
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Page 1/4" in out
+    assert "## Timeline" in out
+    assert "### Page 1/4" in out
     assert "## Actions" not in out
     assert "## Description" not in out
 
@@ -1204,7 +1205,7 @@ def test_issue_view_show_summary_only(monkeypatch: pytest.MonkeyPatch, capsys: p
     assert code == 0
     out = capsys.readouterr().out
     assert "## Description" in out
-    assert "## Timeline Page" not in out
+    assert "## Timeline" not in out
     assert "## Actions" not in out
 
 
@@ -1245,7 +1246,14 @@ def test_pr_view_invalid_expand_error_lists_valid_values(capsys: pytest.CaptureF
     assert code == 1
     err = capsys.readouterr().err
     assert "error: unknown expand option: sss." in err
-    assert "Valid values: resolved, hidden, details, all." in err
+    assert "Valid values: resolved, outdated, minimized, details, all." in err
+
+
+def test_pr_view_hidden_expand_alias_removed(capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.run(["pr", "view", "77960", "--repo", "PaddlePaddle/Paddle", "--expand", "hidden"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: unknown expand option: hidden." in err
 
 
 def test_issue_view_invalid_show_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:
