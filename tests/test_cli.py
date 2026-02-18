@@ -242,6 +242,73 @@ class GhResponder:
                 )
             )
 
+        if "node(id:$id)" in query and "PullRequestReviewComment" in query:
+            comment_id = _extract_field(cmd, "id")
+            if comment_id == "PRRC_self_1":
+                return FakeCompletedProcess(
+                    json.dumps(
+                        {
+                            "data": {
+                                "node": {
+                                    "__typename": "PullRequestReviewComment",
+                                    "id": "PRRC_self_1",
+                                    "createdAt": "2026-02-14T14:50:03Z",
+                                    "body": "self reply",
+                                    "outdated": True,
+                                    "isMinimized": False,
+                                    "minimizedReason": None,
+                                    "path": "python/test_file.py",
+                                    "line": 23,
+                                    "originalLine": 23,
+                                    "diffHunk": "@@ -23,1 +23,1 @@\n-old\n+new",
+                                    "author": {"login": "ShigureNyako"},
+                                    "reactionGroups": [],
+                                    "pullRequestReview": {"id": "PRR_mock"},
+                                }
+                            }
+                        }
+                    )
+                )
+            if comment_id == "c1":
+                return FakeCompletedProcess(
+                    json.dumps(
+                        {
+                            "data": {
+                                "node": {
+                                    "__typename": "IssueComment",
+                                    "id": "c1",
+                                    "createdAt": "2026-02-14T14:31:36Z",
+                                    "body": ("LONG_TEXT " * 220) + "END_MARKER",
+                                    "isMinimized": False,
+                                    "minimizedReason": None,
+                                    "author": {"login": "bot"},
+                                    "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 2}}],
+                                }
+                            }
+                        }
+                    )
+                )
+            if comment_id == "ic1":
+                return FakeCompletedProcess(
+                    json.dumps(
+                        {
+                            "data": {
+                                "node": {
+                                    "__typename": "IssueComment",
+                                    "id": "ic1",
+                                    "createdAt": "2026-02-13T10:00:00Z",
+                                    "body": "ISSUE LONG BODY",
+                                    "isMinimized": True,
+                                    "minimizedReason": "OUTDATED",
+                                    "author": {"login": "bot"},
+                                    "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 1}}],
+                                }
+                            }
+                        }
+                    )
+                )
+            return FakeCompletedProcess(json.dumps({"data": {"node": None}}))
+
         if "ref(qualifiedName:$qualifiedName)" in query:
             qualified = _extract_field(cmd, "qualifiedName")
             if qualified == "refs/heads/feature/deleted-branch":
@@ -364,8 +431,6 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "Review comments (1/3 shown):" not in out
     assert "Thread[1] PRRT_mock_1" not in out
     assert "1 resolved review comments are collapsed;" not in out
-    assert "1 hidden review comments are collapsed (reason: outdated);" in out
-    assert "gh-llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "thread_id: PRRT_mock_1" not in out
     assert "Reply via gh: `gh api graphql" not in out
     assert "Resolve via gh: `gh api graphql" not in out
@@ -471,10 +536,11 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert any(call[:3] == ["gh", "pr", "view"] for call in expand_calls)
     assert any(call[:3] == ["gh", "api", "graphql"] for call in expand_calls)
 
-    code = cli.run(["pr", "event", "2", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    code = cli.run(["pr", "comment-expand", "c1", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Event 2" in out
+    assert "## Comment c1" in out
+    assert "- Type: IssueComment" in out
     assert "END_MARKER" in out
 
 
@@ -533,7 +599,7 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "### Page 3/3" in out
     assert "Hidden timeline page" not in out
     assert "(comment hidden: outdated)" in out
-    assert "run `gh-llm issue event 1 --issue 77924 --repo PaddlePaddle/Paddle` for full content" in out
+    assert "run `gh-llm issue comment-expand ic1 --issue 77924 --repo PaddlePaddle/Paddle` for full comment" in out
     assert "## Actions" in out
     assert "gh issue comment 77924 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
     assert "gh issue close 77924 --repo PaddlePaddle/Paddle" in out
@@ -555,11 +621,11 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "### Page 2/3" in out
 
-    code = cli.run(["issue", "event", "1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    code = cli.run(["issue", "comment-expand", "ic1", "--issue", "77924", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "## Timeline Event 1" in out
-    assert "ISSUE_END_MARKER" in out
+    assert "## Comment ic1" in out
+    assert "- Type: IssueComment" in out
 
 
 def test_pr_review_actions_for_llm_flow(
@@ -1107,7 +1173,6 @@ def test_display_command_env_is_used_in_actions(
 
     out = capsys.readouterr().out
     assert "gh llm pr timeline-expand 2 --pr 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
 
 
 def test_pr_timeline_expand_with_expand_option(
@@ -1135,6 +1200,28 @@ def test_pr_timeline_expand_with_expand_option(
     assert "Review comments (3/3 shown):" in out
     assert "resolved review comments are collapsed" not in out
     assert "hidden review comments are collapsed" not in out
+
+
+def test_pr_thread_expand_by_thread_id(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "pr",
+            "thread-expand",
+            "PRRT_mock_1",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Review Thread PRRT_mock_1" in out
+    assert "review_id: PRR_mock" in out
+    assert "Thread[1] PRRT_mock_1" in out
+    assert "self reply" in out
 
 
 def test_issue_timeline_expand_with_expand_minimized(

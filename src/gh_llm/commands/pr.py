@@ -10,6 +10,7 @@ from gh_llm.invocation import display_command_with
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
     render_checks_section,
+    render_comment_node_detail,
     render_description,
     render_event_detail,
     render_event_detail_blocks,
@@ -94,19 +95,6 @@ def register_pr_parser(subparsers: Any) -> None:
     )
     timeline_expand_parser.set_defaults(handler=cmd_pr_timeline_expand)
 
-    event_parser = pr_subparsers.add_parser("event", help="load one timeline event by global index")
-    event_parser.add_argument("index", type=int, help="1-based event index from timeline view")
-    event_parser.add_argument("--pr", help="PR number/url/branch")
-    event_parser.add_argument("--repo", help="repository in OWNER/REPO format")
-    event_parser.add_argument("--page-size", type=int, help="timeline entries per page")
-    event_parser.add_argument(
-        "--diff-hunk-lines",
-        type=int,
-        default=0,
-        help="max lines for each review diff hunk (default full for event view)",
-    )
-    event_parser.set_defaults(handler=cmd_pr_event)
-
     details_expand_parser = pr_subparsers.add_parser(
         "details-expand",
         help="show collapsed <details>/<summary> blocks for one timeline event",
@@ -136,6 +124,18 @@ def register_pr_parser(subparsers: Any) -> None:
         help="max lines for each review diff hunk (<=0 means full)",
     )
     review_expand_parser.set_defaults(handler=cmd_pr_review_expand)
+
+    thread_expand_parser = pr_subparsers.add_parser("thread-expand", help="expand one review thread by thread ID")
+    thread_expand_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
+    thread_expand_parser.add_argument("--pr", help="PR number/url/branch")
+    thread_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    thread_expand_parser.add_argument(
+        "--diff-hunk-lines",
+        type=int,
+        default=DEFAULT_DIFF_HUNK_LINES,
+        help="max lines for each review diff hunk (<=0 means full)",
+    )
+    thread_expand_parser.set_defaults(handler=cmd_pr_thread_expand)
 
     checks_parser = pr_subparsers.add_parser("checks", help="show CI checks for the pull request")
     checks_parser.add_argument("--pr", help="PR number/url/branch")
@@ -172,6 +172,12 @@ def register_pr_parser(subparsers: Any) -> None:
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_pr_comment_edit)
+
+    comment_expand_parser = pr_subparsers.add_parser("comment-expand", help="expand one comment by node id")
+    comment_expand_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
+    comment_expand_parser.add_argument("--pr", help="PR number/url/branch")
+    comment_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    comment_expand_parser.set_defaults(handler=cmd_pr_comment_expand)
 
     review_start_parser = pr_subparsers.add_parser(
         "review-start",
@@ -353,38 +359,6 @@ def cmd_pr_timeline_expand(args: Any) -> int:
     return 0
 
 
-def cmd_pr_event(args: Any) -> int:
-    client = GitHubClient()
-    pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
-    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=0)
-
-    index = int(args.index)
-    if index < 1 or index > context.total_count:
-        raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
-
-    page_number = ((index - 1) // context.page_size) + 1
-    page = pager.fetch_page(
-        meta=meta,
-        context=context,
-        page=page_number,
-        show_resolved_details=True,
-        show_outdated_details=True,
-        show_minimized_details=True,
-        show_details_blocks=False,
-        diff_hunk_lines=diff_hunk_lines,
-    )
-
-    page_start = (page_number - 1) * context.page_size + 1
-    offset = index - page_start
-    if offset < 0 or offset >= len(page.items):
-        raise RuntimeError("event index is outside loaded page range")
-
-    for line in render_event_detail(index=index, event=page.items[offset]):
-        print(line)
-    return 0
-
-
 def cmd_pr_details_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
@@ -466,6 +440,23 @@ def cmd_pr_review_expand(args: Any) -> int:
     return 0
 
 
+def cmd_pr_thread_expand(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
+    review_id, lines = client.expand_review_thread(
+        ref=meta.ref,
+        thread_id=str(args.thread_id),
+        show_details_blocks=False,
+        diff_hunk_lines=diff_hunk_lines,
+    )
+    print(f"## Review Thread {args.thread_id}")
+    print(f"review_id: {review_id}")
+    for line in lines:
+        print(line)
+    return 0
+
+
 def cmd_pr_checks(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
@@ -531,6 +522,18 @@ def cmd_pr_comment_edit(args: Any) -> int:
     updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
     print(f"comment: {updated_comment_id}")
     print("status: edited")
+    return 0
+
+
+def cmd_pr_comment_expand(args: Any) -> int:
+    client = GitHubClient()
+    if args.repo is not None and args.pr is None:
+        raise RuntimeError("`--pr` is required when `--repo` is provided")
+    if args.pr is not None:
+        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    node = client.fetch_comment_node(str(args.comment_id))
+    for line in render_comment_node_detail(str(args.comment_id), node):
+        print(line)
     return 0
 
 

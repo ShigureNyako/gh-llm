@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from gh_llm.invocation import display_command, display_command_with
 
@@ -279,13 +279,6 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
             f"   {event.resolved_hidden_count} resolved review comments are collapsed; "
             f"⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {repo}')}`"
         )
-    if event.minimized_hidden_count > 0:
-        repo = f"{context.owner}/{context.name}"
-        reason_suffix = f" (reason: {event.minimized_hidden_reasons})" if event.minimized_hidden_reasons else ""
-        lines.append(
-            f"   {event.minimized_hidden_count} hidden review comments are collapsed{reason_suffix}; "
-            f"⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {repo}')}`"
-        )
     if event.kind.startswith("review/"):
         detail_text = (event.full_text or event.summary or "").lower()
         if "diff hunk clipped" in detail_text:
@@ -293,9 +286,10 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
                 f"   ⏎ run `{display_command_with(f'pr review-expand {event.source_id} --pr {context.number} --repo {context.owner}/{context.name} --diff-hunk-lines 0')}` for full diff hunk context"
             )
     if event.is_truncated:
-        lines.append(
-            f"   ⏎ run `{display_command_with(f'{command_group} event {index} --{selector_name} {context.number} --repo {context.owner}/{context.name}')}` for full content"
-        )
+        if event.kind == "comment":
+            lines.append(
+                f"   ⏎ run `{display_command_with(f'{command_group} comment-expand {event.source_id} --{selector_name} {context.number} --repo {context.owner}/{context.name}')}` for full comment"
+            )
     if event.kind == "push/commit":
         lines.append(
             f"   Δ commit diff: `gh api repos/{context.owner}/{context.name}/commits/{event.source_id} -H 'Accept: application/vnd.github.v3.diff'`"
@@ -353,6 +347,84 @@ def render_event_detail_blocks(index: int, event: TimelineEvent) -> list[str]:
             lines.append(f"   {raw}")
         lines.append("   </details>")
     return lines
+
+
+def render_comment_node_detail(comment_id: str, node: dict[str, object]) -> list[str]:
+    typename = str(node.get("__typename") or "")
+    actor = _render_actor(node.get("author"))
+    created_at = str(node.get("createdAt") or "")
+    body = str(node.get("body") or "")
+    lines = [f"## Comment {comment_id}", f"- Type: {typename}", f"- Actor: @{actor}", f"- Time: {created_at}", ""]
+    lines.extend(["<comment>", *(body.splitlines() or [""]), "</comment>"])
+    reactions = _render_reactions(node.get("reactionGroups"))
+    if reactions:
+        lines.append(f"Reactions: {reactions}")
+    if typename == "PullRequestReviewComment":
+        path = str(node.get("path") or "(unknown path)")
+        line = node.get("line")
+        original_line = node.get("originalLine")
+        review_obj = node.get("pullRequestReview")
+        review_id = ""
+        if isinstance(review_obj, dict):
+            review = cast("dict[str, object]", review_obj)
+            review_id = str(review.get("id") or "")
+        lines.append(f"path: {path}")
+        if line is not None:
+            lines.append(f"line: {line}")
+        if original_line is not None:
+            lines.append(f"original_line: {original_line}")
+        if review_id:
+            lines.append(f"review_id: {review_id}")
+        diff_hunk = str(node.get("diffHunk") or "").strip()
+        if diff_hunk:
+            lines.extend(["Diff Hunk:", "```diff", *diff_hunk.splitlines(), "```"])
+    return lines
+
+
+def _render_actor(value: object) -> str:
+    if isinstance(value, dict):
+        author = cast("dict[str, object]", value)
+        login = str(author.get("login") or "unknown")
+        name = author.get("name")
+        if isinstance(name, str):
+            normalized = name.strip()
+            if normalized and normalized != login:
+                return f"{login} ({normalized})"
+        return login
+    return "unknown"
+
+
+def _render_reactions(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    icon_map = {
+        "THUMBS_UP": "👍",
+        "THUMBS_DOWN": "👎",
+        "LAUGH": "😄",
+        "HOORAY": "🎉",
+        "CONFUSED": "😕",
+        "HEART": "❤️",
+        "ROCKET": "🚀",
+        "EYES": "👀",
+    }
+    parts: list[str] = []
+    reactions = cast("list[object]", value)
+    for item in reactions:
+        if not isinstance(item, dict):
+            continue
+        reaction = cast("dict[str, object]", item)
+        users = reaction.get("users")
+        if isinstance(users, dict):
+            users_dict = cast("dict[str, object]", users)
+            total = users_dict.get("totalCount")
+        else:
+            total = 0
+        if not isinstance(total, int) or total <= 0:
+            continue
+        content = str(reaction.get("content") or "")
+        emoji = icon_map.get(content, content.lower())
+        parts.append(f"{emoji} x{total}")
+    return ", ".join(parts) if parts else None
 
 
 def _indent_block(text: str) -> list[str]:

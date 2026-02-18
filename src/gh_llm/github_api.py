@@ -488,6 +488,38 @@ mutation($pullRequestId:ID!,$path:String!,$line:Int!,$side:DiffSide!,$body:Strin
 }
 """.strip()
 
+COMMENT_NODE_QUERY = """
+query($id:ID!){
+  node(id:$id){
+    __typename
+    ... on IssueComment{
+      id
+      createdAt
+      body
+      isMinimized
+      minimizedReason
+      author{login ... on User{name}}
+      reactionGroups{content users{totalCount}}
+    }
+    ... on PullRequestReviewComment{
+      id
+      createdAt
+      body
+      outdated
+      isMinimized
+      minimizedReason
+      path
+      line
+      originalLine
+      diffHunk
+      author{login ... on User{name}}
+      reactionGroups{content users{totalCount}}
+      pullRequestReview{id}
+    }
+  }
+}
+""".strip()
+
 PULL_REQUEST_ACTIONS_META_QUERY = """
 query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
@@ -771,6 +803,38 @@ class GitHubClient:
         self._review_threads_cache[key] = by_review
         return by_review
 
+    def expand_review_thread(
+        self,
+        *,
+        ref: PullRequestRef,
+        thread_id: str,
+        show_details_blocks: bool = False,
+        diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
+    ) -> tuple[str, list[str]]:
+        if self._viewer_login is None:
+            self._viewer_login = self._get_viewer_login()
+        threads_by_review = self._get_review_threads_by_review(ref)
+        for review_id, threads in threads_by_review.items():
+            for raw_thread in threads:
+                thread = _as_dict(raw_thread, context="review thread")
+                current_id = _as_optional_str(thread.get("id")) or ""
+                if current_id != thread_id:
+                    continue
+                lines, _, _, _ = _render_review_thread_block(
+                    thread_id=current_id,
+                    is_resolved=bool(thread.get("isResolved")),
+                    thread_index=1,
+                    comments=_as_list(thread.get("comments")),
+                    ref=ref,
+                    viewer_login=self._viewer_login or "",
+                    show_outdated_details=True,
+                    show_minimized_details=True,
+                    show_details_blocks=show_details_blocks,
+                    diff_hunk_lines=diff_hunk_lines,
+                )
+                return review_id, lines
+        raise RuntimeError(f"thread {thread_id} not found on this pull request")
+
     def reply_review_thread(self, thread_id: str, body: str) -> str:
         query = """
 mutation($threadId:ID!,$body:String!){
@@ -830,6 +894,17 @@ mutation($threadId:ID!){
         if updated_id:
             return updated_id
         raise RuntimeError("failed to edit comment")
+
+    def fetch_comment_node(self, comment_id: str) -> dict[str, object]:
+        payload = _run_graphql_payload(COMMENT_NODE_QUERY, {"id": comment_id})
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        node_obj = _as_dict_optional(data_obj.get("node"))
+        if node_obj is None:
+            raise RuntimeError(f"comment {comment_id} not found")
+        typename = _as_optional_str(node_obj.get("__typename")) or ""
+        if typename not in {"IssueComment", "PullRequestReviewComment"}:
+            raise RuntimeError(f"unsupported comment type for {comment_id}: {typename or 'unknown'}")
+        return node_obj
 
     def _try_update_issue_comment(self, *, comment_id: str, body: str) -> str | None:
         query = """
@@ -1581,9 +1656,6 @@ def _build_review_text(
         chunks.append(f"Review comments ({rendered_comments}/{total_count} shown):")
         if detail_lines:
             chunks.extend(detail_lines)
-        hidden_count = total_count - rendered_comments
-        if hidden_count > 0:
-            chunks.append(f"... {hidden_count} review comments hidden.")
     elif threads_for_review:
         chunks.append("Review comments (0/0 shown):")
         chunks.append("(review threads exist but contain no comment nodes)")
@@ -1614,16 +1686,28 @@ def _render_review_thread_block(
     details_collapsed_count = 0
     for comment_index, raw_comment in enumerate(comments, start=1):
         comment = _as_dict(raw_comment, context="review comment")
+        comment_id = _as_optional_str(comment.get("id")) or "(unknown comment id)"
         is_minimized = bool(comment.get("isMinimized"))
         is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
         hide_by_outdated = is_outdated and not show_outdated_details
         hide_by_minimized = is_minimized and not show_minimized_details
         if hide_by_outdated or hide_by_minimized:
             minimized_hidden_count += 1
+            reasons: list[str] = []
             if hide_by_outdated:
                 minimized_reasons.add("outdated")
+                reasons.append("outdated")
             if hide_by_minimized:
-                minimized_reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
+                reason = _format_minimized_reason(comment.get("minimizedReason"))
+                minimized_reasons.add(reason)
+                reasons.append(reason)
+            reason_text = ", ".join(sorted(set(reasons)))
+            comment_expand_cmd = display_command_with(
+                f"pr comment-expand {comment_id} --pr {ref.number} --repo {ref.owner}/{ref.name}"
+            )
+            lines.append(f"- [{comment_index}] (hidden comment: {reason_text})")
+            lines.append(f"  ◌ comment_id: {comment_id}")
+            lines.append(f"  ⏎ run `{comment_expand_cmd}`")
             continue
         comment_lines, comment_has_clipped_diff_hunk, comment_details_collapsed_count = _render_review_comment_block(
             comment=comment,
@@ -1638,9 +1722,6 @@ def _render_review_thread_block(
         visible_comments += 1
         has_clipped_diff_hunk = has_clipped_diff_hunk or comment_has_clipped_diff_hunk
         details_collapsed_count += comment_details_collapsed_count
-    if minimized_hidden_count > 0:
-        reason_text = ", ".join(sorted(minimized_reasons))
-        lines.append(f"  ... {minimized_hidden_count} hidden review comments (reason: {reason_text}).")
     reply_cmd = display_command_with(
         f"pr thread-reply {thread_id} --body '<reply>' --pr {ref.number} --repo {ref.owner}/{ref.name}"
     )

@@ -73,8 +73,8 @@ gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,outdated,minimized
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle --expand all
 
-# Show full content for one event index
-gh-llm pr event 15 --pr 77900 --repo PaddlePaddle/Paddle
+# Show full content for one comment node id
+gh-llm pr comment-expand IC_xxx --pr 77900 --repo PaddlePaddle/Paddle
 
 # Expand resolved review details in batch
 gh-llm pr review-expand PRR_xxx,PRR_yyy --pr 77900 --repo PaddlePaddle/Paddle
@@ -89,7 +89,7 @@ gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
 ```bash
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle
 gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
-gh-llm issue event 6 --issue 77924 --repo PaddlePaddle/Paddle
+gh-llm issue comment-expand IC_xxx --issue 77924 --repo PaddlePaddle/Paddle
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand minimized,details
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```
