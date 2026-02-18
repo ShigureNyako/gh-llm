@@ -455,6 +455,28 @@ def test_view_and_expand_use_real_cursor_pagination(
     )
     assert "Unresolve via gh-llm:" in out
 
+    code = cli.run(
+        [
+            "pr",
+            "review-expand",
+            "PRR_mock",
+            "--threads",
+            "1-1",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Review PRR_mock" in out
+    assert "Review comments (2/2 shown):" in out
+    assert "Thread[1] PRRT_mock_1" in out
+    assert "PRRT_mock_2" not in out
+
     code = cli.run(["pr", "checks", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--all"])
     assert code == 0
     out = capsys.readouterr().out

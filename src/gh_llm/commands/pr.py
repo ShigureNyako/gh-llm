@@ -118,6 +118,10 @@ def register_pr_parser(subparsers: Any) -> None:
     review_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
     review_expand_parser.add_argument(
+        "--threads",
+        help="expand specific conversation range like 6-16 (1-based, within current review conversation order)",
+    )
+    review_expand_parser.add_argument(
         "--diff-hunk-lines",
         type=int,
         default=DEFAULT_DIFF_HUNK_LINES,
@@ -395,10 +399,29 @@ def cmd_pr_review_expand(args: Any) -> int:
     pager = TimelinePager(client)
     context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
     review_ids = parse_review_ids(args.review_ids)
+    thread_range = _parse_thread_range(getattr(args, "threads", None))
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     if diff_hunk_lines is not None:
         print("Δ Diff hunk window is limited; rerun with `--diff-hunk-lines 0` for full review diff context.")
         print()
+
+    if thread_range is not None:
+        start, end = thread_range
+        for review_id in review_ids:
+            print(f"## Review {review_id}")
+            lines = client.expand_review(
+                ref=meta.ref,
+                review_id=review_id,
+                thread_start=start,
+                thread_end=end,
+                show_resolved_details=False,
+                show_details_blocks=False,
+                diff_hunk_lines=diff_hunk_lines,
+            )
+            for line in lines:
+                print(line)
+            print()
+        return 0
 
     matched: dict[str, tuple[int, TimelinePage]] = {}
     for page_number in range(1, context.total_pages + 1):
@@ -410,6 +433,7 @@ def cmd_pr_review_expand(args: Any) -> int:
             show_outdated_details=True,
             show_minimized_details=True,
             show_details_blocks=False,
+            review_threads_window=None,
             diff_hunk_lines=diff_hunk_lines,
         )
         for offset, event in enumerate(page.items):
@@ -888,3 +912,24 @@ def parse_review_ids(raw_review_ids: list[str]) -> list[str]:
     if not values:
         raise RuntimeError("no valid review ids provided")
     return values
+
+
+def _parse_thread_range(raw: str | None) -> tuple[int, int] | None:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if "-" in text:
+        left, right = text.split("-", 1)
+    elif ".." in text:
+        left, right = text.split("..", 1)
+    else:
+        left, right = text, text
+    start = int(left)
+    end = int(right)
+    if start <= 0 or end <= 0:
+        raise RuntimeError(f"invalid thread range: {text}")
+    if start > end:
+        start, end = end, start
+    return start, end

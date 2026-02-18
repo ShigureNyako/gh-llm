@@ -78,6 +78,8 @@ gh-llm pr comment-expand IC_xxx --pr 77900 --repo PaddlePaddle/Paddle
 
 # Expand resolved review details in batch
 gh-llm pr review-expand PRR_xxx,PRR_yyy --pr 77900 --repo PaddlePaddle/Paddle
+# Expand only a conversation range (e.g. hidden middle part)
+gh-llm pr review-expand PRR_xxx --threads 6-16 --pr 77900 --repo PaddlePaddle/Paddle
 
 # Checks
 gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle

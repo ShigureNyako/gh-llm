@@ -672,6 +672,7 @@ class GitHubClient:
         show_outdated_details: bool = False,
         show_minimized_details: bool = False,
         show_details_blocks: bool = False,
+        review_threads_window: int | None = 10,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
@@ -698,6 +699,7 @@ class GitHubClient:
             show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
+            review_threads_window=review_threads_window,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
@@ -713,6 +715,7 @@ class GitHubClient:
         show_outdated_details: bool = False,
         show_minimized_details: bool = False,
         show_details_blocks: bool = False,
+        review_threads_window: int | None = 10,
         diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
         kind: str = "pr",
     ) -> TimelinePage:
@@ -739,6 +742,7 @@ class GitHubClient:
             show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
+            review_threads_window=review_threads_window,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=self._viewer_login or "",
             subject_kind=kind,
@@ -834,6 +838,68 @@ class GitHubClient:
                 )
                 return review_id, lines
         raise RuntimeError(f"thread {thread_id} not found on this pull request")
+
+    def expand_review(
+        self,
+        *,
+        ref: PullRequestRef,
+        review_id: str,
+        thread_start: int | None = None,
+        thread_end: int | None = None,
+        show_resolved_details: bool = True,
+        show_details_blocks: bool = False,
+        diff_hunk_lines: int | None = DEFAULT_REVIEW_DIFF_HUNK_LINES,
+    ) -> list[str]:
+        if self._viewer_login is None:
+            self._viewer_login = self._get_viewer_login()
+        threads_by_review = self._get_review_threads_by_review(ref)
+        threads = list(threads_by_review.get(review_id, []))
+        if not threads:
+            raise RuntimeError(f"review {review_id} not found on this pull request")
+
+        filtered: list[tuple[int, dict[str, object]]] = []
+        logical_index = 0
+        for raw_thread in threads:
+            thread = _as_dict(raw_thread, context="review thread")
+            is_resolved = bool(thread.get("isResolved"))
+            if is_resolved and not show_resolved_details:
+                continue
+            logical_index += 1
+            filtered.append((logical_index, thread))
+
+        if thread_start is not None or thread_end is not None:
+            start = thread_start or 1
+            end = thread_end or len(filtered)
+            selected = [item for item in filtered if start <= item[0] <= end]
+        else:
+            selected = filtered
+
+        if not selected:
+            raise RuntimeError("no review conversations matched requested thread range")
+
+        lines: list[str] = []
+        visible_comment_count = 0
+        total_comment_count = 0
+        for logical_idx, thread in selected:
+            comments = _as_list(thread.get("comments"))
+            total_comment_count += len(comments)
+            thread_id = _as_optional_str(thread.get("id")) or "(unknown thread id)"
+            thread_lines, visible, _, _ = _render_review_thread_block(
+                thread_id=thread_id,
+                is_resolved=bool(thread.get("isResolved")),
+                thread_index=logical_idx,
+                comments=comments,
+                ref=ref,
+                viewer_login=self._viewer_login or "",
+                show_outdated_details=True,
+                show_minimized_details=True,
+                show_details_blocks=show_details_blocks,
+                diff_hunk_lines=diff_hunk_lines,
+            )
+            lines.extend(thread_lines)
+            visible_comment_count += visible
+
+        return [f"Review comments ({visible_comment_count}/{total_comment_count} shown):", *lines]
 
     def reply_review_thread(self, thread_id: str, body: str) -> str:
         query = """
@@ -1247,6 +1313,7 @@ def _parse_timeline_page(
     show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
+    review_threads_window: int | None,
     diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str = "pr",
@@ -1270,6 +1337,7 @@ def _parse_timeline_page(
             show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
+            review_threads_window=review_threads_window,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
             subject_kind=subject_kind,
@@ -1290,6 +1358,7 @@ def _parse_node(
     show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
+    review_threads_window: int | None,
     diff_hunk_lines: int | None,
     viewer_login: str,
     subject_kind: str,
@@ -1349,6 +1418,7 @@ def _parse_node(
             show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
             show_details_blocks=show_details_blocks,
+            review_threads_window=review_threads_window,
             diff_hunk_lines=diff_hunk_lines,
             viewer_login=viewer_login,
         )
@@ -1358,7 +1428,10 @@ def _parse_node(
             show_outdated_details=show_outdated_details,
             show_minimized_details=show_minimized_details,
         )
-        summary, is_truncated = _clip_text(full_review, f"review state: {state.lower()}")
+        # Review content already uses structured folding (thread window, hidden comments, diff hunk window).
+        # Avoid additional character-level clipping that can cut a thread in the middle.
+        summary = full_review
+        is_truncated = False
         return TimelineEvent(
             timestamp=_parse_datetime(_as_optional_str(node.get("submittedAt"))),
             kind=f"review/{state.lower()}",
@@ -1366,7 +1439,7 @@ def _parse_node(
             summary=summary,
             source_id=review_id,
             full_text=full_review,
-            is_truncated=is_truncated or has_clipped_diff_hunk,
+            is_truncated=has_clipped_diff_hunk,
             resolved_hidden_count=resolved_hidden_count,
             minimized_hidden_count=minimized_hidden_count,
             minimized_hidden_reasons=minimized_hidden_reasons,
@@ -1605,6 +1678,7 @@ def _build_review_text(
     show_outdated_details: bool,
     show_minimized_details: bool,
     show_details_blocks: bool,
+    review_threads_window: int | None,
     diff_hunk_lines: int | None,
     viewer_login: str,
 ) -> tuple[str, int, bool, int]:
@@ -1617,6 +1691,8 @@ def _build_review_text(
         len(_as_list(_as_dict(thread, context="thread").get("comments"))) for thread in threads_for_review
     )
     detail_lines: list[str] = []
+    thread_blocks: list[list[str]] = []
+    thread_visible_counts: list[int] = []
     resolved_hidden_count = 0
     rendered_comments = 0
     rendered_thread_index = 0
@@ -1644,16 +1720,50 @@ def _build_review_text(
                 diff_hunk_lines=diff_hunk_lines,
             )
         )
-        detail_lines.extend(thread_lines)
+        thread_blocks.append(thread_lines)
+        thread_visible_counts.append(visible_comments)
         rendered_comments += visible_comments
         has_clipped_diff_hunk = has_clipped_diff_hunk or thread_has_clipped_diff_hunk
         details_collapsed_count += thread_details_collapsed_count
+
+    shown_comments = rendered_comments
+    if review_threads_window is not None and review_threads_window > 0 and len(thread_blocks) > review_threads_window:
+        prefix_count = max(1, review_threads_window // 2)
+        suffix_count = max(1, review_threads_window - prefix_count)
+        hidden_threads = len(thread_blocks) - (prefix_count + suffix_count)
+        shown_comments = sum(thread_visible_counts[:prefix_count]) + sum(thread_visible_counts[-suffix_count:])
+        review_id = _as_optional_str(node.get("id")) or ""
+        if review_id and hidden_threads > 0:
+            hidden_start = prefix_count + 1
+            hidden_end = prefix_count + hidden_threads
+            hidden_label = str(hidden_start) if hidden_start == hidden_end else f"{hidden_start}-{hidden_end}"
+            expand_cmd = display_command_with(
+                f"pr review-expand {review_id} --pr {ref.number} --repo {ref.owner}/{ref.name}"
+            )
+            expand_hidden_cmd = display_command_with(
+                f"pr review-expand {review_id} --threads {hidden_start}-{hidden_end} --pr {ref.number} --repo {ref.owner}/{ref.name}"
+            )
+            detail_lines.extend(_flatten_thread_blocks(thread_blocks[:prefix_count]))
+            detail_lines.extend(
+                [
+                    "---",
+                    f"Hidden conversations: {hidden_label} ({hidden_threads} hidden)",
+                    f"⏎ run `{expand_hidden_cmd}` to load hidden conversations only.",
+                    f"⏎ run `{expand_cmd}` to load all conversations.",
+                    "---",
+                ]
+            )
+            detail_lines.extend(_flatten_thread_blocks(thread_blocks[-suffix_count:]))
+        else:
+            detail_lines.extend(_flatten_thread_blocks(thread_blocks))
+    else:
+        detail_lines.extend(_flatten_thread_blocks(thread_blocks))
 
     chunks: list[str] = []
     if body:
         chunks.append(body)
     if total_count > 0:
-        chunks.append(f"Review comments ({rendered_comments}/{total_count} shown):")
+        chunks.append(f"Review comments ({shown_comments}/{total_count} shown):")
         if detail_lines:
             chunks.extend(detail_lines)
     elif threads_for_review:
@@ -1770,6 +1880,13 @@ def _build_review_minimized_summary(
     if count == 0:
         return 0, None
     return count, ", ".join(sorted(reasons))
+
+
+def _flatten_thread_blocks(blocks: list[list[str]]) -> list[str]:
+    merged: list[str] = []
+    for block in blocks:
+        merged.extend(block)
+    return merged
 
 
 def _format_minimized_reason(value: object) -> str:
