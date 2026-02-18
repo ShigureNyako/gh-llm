@@ -63,6 +63,9 @@ The extension entrypoint forwards to local repository path via `uv run --project
 gh-llm pr view 77900 --repo PaddlePaddle/Paddle
 gh llm pr view 77900 --repo PaddlePaddle/Paddle
 
+# Show selected regions only
+gh-llm pr view 77900 --repo PaddlePaddle/Paddle --show timeline,checks
+
 # Expand one hidden timeline page
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
 
@@ -88,6 +91,7 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle
 gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
 gh-llm issue event 6 --issue 77924 --repo PaddlePaddle/Paddle
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand hidden,details
+gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```
 
 `--expand` values:
@@ -95,6 +99,13 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand hidden,details
 - PR: `resolved`, `hidden`, `details`, `all`
 - Issue: `hidden`, `details`, `all`
 - Supports comma-separated values and repeated flags.
+
+`--show` values:
+
+- PR: `meta`, `description`, `timeline`, `checks`, `actions`, `all`
+- Issue: `meta`, `description`, `timeline`, `actions`, `all`
+- Supports comma-separated values and repeated flags.
+- `summary` is supported as an alias for `meta,description`.
 
 ### Comment / Thread Actions
 
@@ -161,8 +172,7 @@ This supports the normal flow where one review contains multiple inline comments
 ## Render Conventions
 
 - PR/Issue metadata is rendered as frontmatter.
-- PR description uses `<pr_description>...</pr_description>`.
-- Issue description uses `<issue_description>...</issue_description>`.
+- Description uses `<description>...</description>`.
 - Comment body uses `<comment>...</comment>` to avoid markdown fence ambiguity.
 - Hidden timeline sections are separated by `---` and include expand commands.
 

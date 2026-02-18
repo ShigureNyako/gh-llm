@@ -18,21 +18,12 @@ SUMMARY_RE = re.compile(r"(?is)<summary\b[^>]*>(.*?)</summary>")
 
 
 def render_header(context: TimelineContext) -> list[str]:
-    description = context.body.strip() or "(no description)"
-    repo = f"{context.owner}/{context.name}"
+    return [*render_frontmatter(context), "", *render_description(context)]
+
+
+def render_frontmatter(context: TimelineContext) -> list[str]:
     is_issue = context.kind == "issue"
     key = "issue" if is_issue else "pr"
-    noun_title = "Issue" if is_issue else "PR"
-    description_tag = "issue_description" if is_issue else "pr_description"
-    description_title = "## Issue Description" if is_issue else "## PR Description"
-    edit_cmd = (
-        f"gh issue edit {context.number} --repo {repo} --body '<issue_description_markdown>'"
-        if is_issue
-        else f"gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'"
-    )
-    body_placeholder = (
-        "⌨ issue_body: '<issue_description_markdown>'" if is_issue else "⌨ pr_body: '<pr_description_markdown>'"
-    )
     return [
         "---",
         f"{key}: {context.number}",
@@ -47,16 +38,32 @@ def render_header(context: TimelineContext) -> list[str]:
         f"page_size: {context.page_size}",
         f"total_pages: {context.total_pages}",
         "---",
-        "",
-        *(
-            [
-                "## Diff Actions",
-                f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`",
-                "",
-            ]
-            if not is_issue
-            else []
-        ),
+    ]
+
+
+def render_diff_actions(context: TimelineContext) -> list[str]:
+    if context.kind == "issue":
+        return []
+    repo = f"{context.owner}/{context.name}"
+    return [f"Δ PR diff: `gh pr diff {context.number} --repo {repo}`"]
+
+
+def render_description(context: TimelineContext) -> list[str]:
+    description = context.body.strip() or "(no description)"
+    repo = f"{context.owner}/{context.name}"
+    is_issue = context.kind == "issue"
+    noun_title = "Issue" if is_issue else "PR"
+    description_tag = "description"
+    description_title = "## Description"
+    edit_cmd = (
+        f"gh issue edit {context.number} --repo {repo} --body '<issue_description_markdown>'"
+        if is_issue
+        else f"gh pr edit {context.number} --repo {repo} --body '<pr_description_markdown>'"
+    )
+    body_placeholder = (
+        "⌨ issue_body: '<issue_description_markdown>'" if is_issue else "⌨ pr_body: '<pr_description_markdown>'"
+    )
+    return [
         description_title,
         *([f"Reactions: {context.pr_reactions_summary}"] if context.pr_reactions_summary else []),
         *(
@@ -95,32 +102,33 @@ def render_expand_hints(context: TimelineContext, shown_pages: set[int]) -> list
     return []
 
 
-def render_pr_actions(context: TimelineContext) -> list[str]:
+def render_pr_actions(context: TimelineContext, *, include_diff: bool = True, include_manage: bool = True) -> list[str]:
     repo = f"{context.owner}/{context.name}"
-    return [
-        "",
-        "---",
-        "PR actions:",
-        "⌨ comment_body: '<comment_body>'",
-        f"⏎ Comment via gh: `gh pr comment {context.number} --repo {repo} --body '<comment_body>'`",
-        f"⏎ Close PR via gh: `gh pr close {context.number} --repo {repo}`",
-        "⌨ labels_csv: '<label1>,<label2>'",
-        f"⏎ Add labels via gh: `gh pr edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
-        f"⏎ Remove labels via gh: `gh pr edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
-        "⌨ reviewers_csv: '<reviewer1>,<reviewer2>'",
-        f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
-        "⌨ assignees_csv: '<assignee1>,<assignee2>'",
-        f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
-        "---",
-    ]
+    lines = ["## Actions"]
+    if include_diff:
+        lines.extend(render_diff_actions(context))
+    if include_manage:
+        lines.extend(
+            [
+                "⌨ comment_body: '<comment_body>'",
+                f"⏎ Comment via gh: `gh pr comment {context.number} --repo {repo} --body '<comment_body>'`",
+                f"⏎ Close PR via gh: `gh pr close {context.number} --repo {repo}`",
+                "⌨ labels_csv: '<label1>,<label2>'",
+                f"⏎ Add labels via gh: `gh pr edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
+                f"⏎ Remove labels via gh: `gh pr edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
+                "⌨ reviewers_csv: '<reviewer1>,<reviewer2>'",
+                f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
+                "⌨ assignees_csv: '<assignee1>,<assignee2>'",
+                f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
+            ]
+        )
+    return lines
 
 
 def render_issue_actions(context: TimelineContext) -> list[str]:
     repo = f"{context.owner}/{context.name}"
     return [
-        "",
-        "---",
-        "Issue actions:",
+        "## Actions",
         "⌨ comment_body: '<comment_body>'",
         f"⏎ Comment via gh: `gh issue comment {context.number} --repo {repo} --body '<comment_body>'`",
         f"⏎ Close issue via gh: `gh issue close {context.number} --repo {repo}`",
@@ -129,7 +137,6 @@ def render_issue_actions(context: TimelineContext) -> list[str]:
         f"⏎ Remove labels via gh: `gh issue edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
         "⌨ assignees_csv: '<assignee1>,<assignee2>'",
         f"⏎ Assign via gh: `gh issue edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
-        "---",
     ]
 
 

@@ -9,9 +9,11 @@ from gh_llm.invocation import display_command_with
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
     render_checks_section,
+    render_description,
     render_event_detail,
     render_event_detail_blocks,
     render_expand_hints,
+    render_frontmatter,
     render_header,
     render_hidden_gap,
     render_page,
@@ -31,6 +33,15 @@ class _ExpandOptions:
     details: bool = False
 
 
+@dataclass(frozen=True)
+class _ShowOptions:
+    meta: bool = True
+    description: bool = True
+    timeline: bool = True
+    checks: bool = True
+    actions: bool = True
+
+
 def register_pr_parser(subparsers: Any) -> None:
     pr_parser = subparsers.add_parser("pr", help="PR-related commands")
     pr_subparsers = pr_parser.add_subparsers(dest="pr_command")
@@ -42,6 +53,12 @@ def register_pr_parser(subparsers: Any) -> None:
     view_parser.add_argument("pr", nargs="?", help="PR number/url/branch")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
+    view_parser.add_argument(
+        "--show",
+        action="append",
+        default=[],
+        help="show regions: meta, description, timeline, checks, actions, all (comma-separated or repeatable)",
+    )
     view_parser.add_argument(
         "--expand",
         action="append",
@@ -213,6 +230,7 @@ def cmd_pr_view(args: Any) -> int:
     page_size = int(args.page_size)
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
+    show = _parse_show_options(raw_values=list(getattr(args, "show", [])))
     client = GitHubClient()
     pager = TimelinePager(client)
 
@@ -227,12 +245,26 @@ def cmd_pr_view(args: Any) -> int:
     )
     shown_pages: set[int] = {1}
 
-    for line in render_header(context):
-        print(line)
-    for line in render_page(1, context, first_page):
-        print(line)
+    wrote_output = False
 
-    if last_page is not None:
+    def print_block(lines: list[str]) -> None:
+        nonlocal wrote_output
+        if not lines:
+            return
+        if wrote_output:
+            print()
+        for line in lines:
+            print(line)
+        wrote_output = True
+
+    if show.meta:
+        print_block(render_frontmatter(context))
+    if show.description:
+        print_block(render_description(context))
+    if show.timeline:
+        print_block(render_page(1, context, first_page))
+
+    if show.timeline and last_page is not None:
         trailing_pages: list[tuple[int, TimelinePage]] = []
         include_previous = context.total_pages > 2 and context.total_count % context.page_size != 0
         if include_previous:
@@ -256,9 +288,7 @@ def cmd_pr_view(args: Any) -> int:
         hidden_start = 2
         hidden_end = first_trailing_page - 1
         hidden_pages = list(range(hidden_start, hidden_end + 1)) if hidden_start <= hidden_end else []
-        print()
-        for line in render_hidden_gap(context, hidden_pages):
-            print(line)
+        print_block(render_hidden_gap(context, hidden_pages))
         if hidden_pages:
             print()
         for index, (page_number, page_data) in enumerate(trailing_pages):
@@ -267,19 +297,26 @@ def cmd_pr_view(args: Any) -> int:
             for line in render_page(page_number, context, page_data):
                 print(line)
 
-    print()
-    for line in render_expand_hints(context, shown_pages):
-        print(line)
-    checks = client.fetch_checks(meta.ref) if meta.state == "OPEN" else []
-    for line in render_checks_section(
-        context=context,
-        checks=checks,
-        show_all=False,
-        is_open=(meta.state == "OPEN"),
-    ):
-        print(line)
-    for line in render_pr_actions(context):
-        print(line)
+    if show.timeline:
+        print_block(render_expand_hints(context, shown_pages))
+    if show.checks:
+        checks = client.fetch_checks(meta.ref) if meta.state == "OPEN" else []
+        print_block(
+            render_checks_section(
+                context=context,
+                checks=checks,
+                show_all=False,
+                is_open=(meta.state == "OPEN"),
+            )
+        )
+    if show.actions:
+        print_block(
+            render_pr_actions(
+                context,
+                include_diff=True,
+                include_manage=show.actions,
+            )
+        )
 
     return 0
 
@@ -662,6 +699,42 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
                 details = True
 
     return _ExpandOptions(resolved=resolved, hidden=hidden, details=details)
+
+
+def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
+    if not raw_values:
+        return _ShowOptions()
+
+    selected: set[str] = set()
+    aliases: dict[str, set[str]] = {
+        "meta": {"meta"},
+        "description": {"description"},
+        "desc": {"description"},
+        "timeline": {"timeline"},
+        "checks": {"checks"},
+        "actions": {"actions"},
+        "summary": {"meta", "description"},
+        "all": {"meta", "description", "timeline", "checks", "actions"},
+        "*": {"meta", "description", "timeline", "checks", "actions"},
+    }
+
+    for raw in raw_values:
+        for part in raw.split(","):
+            token = part.strip().lower()
+            if not token:
+                continue
+            mapped = aliases.get(token)
+            if mapped is None:
+                raise RuntimeError(f"unknown show option: {token}")
+            selected.update(mapped)
+
+    return _ShowOptions(
+        meta=("meta" in selected),
+        description=("description" in selected),
+        timeline=("timeline" in selected),
+        checks=("checks" in selected),
+        actions=("actions" in selected),
+    )
 
 
 def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:

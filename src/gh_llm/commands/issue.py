@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING, Any
 from gh_llm.github_api import GitHubClient
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
+    render_description,
     render_event_detail,
     render_event_detail_blocks,
     render_expand_hints,
+    render_frontmatter,
     render_header,
     render_hidden_gap,
     render_issue_actions,
@@ -25,6 +27,14 @@ class _ExpandOptions:
     details: bool = False
 
 
+@dataclass(frozen=True)
+class _ShowOptions:
+    meta: bool = True
+    description: bool = True
+    timeline: bool = True
+    actions: bool = True
+
+
 def register_issue_parser(subparsers: Any) -> None:
     issue_parser = subparsers.add_parser("issue", help="Issue-related commands")
     issue_subparsers = issue_parser.add_subparsers(dest="issue_command")
@@ -36,6 +46,12 @@ def register_issue_parser(subparsers: Any) -> None:
     view_parser.add_argument("issue", nargs="?", help="Issue number/url")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
+    view_parser.add_argument(
+        "--show",
+        action="append",
+        default=[],
+        help="show regions: meta, description, timeline, actions, all (comma-separated or repeatable)",
+    )
     view_parser.add_argument(
         "--expand",
         action="append",
@@ -85,6 +101,7 @@ def register_issue_parser(subparsers: Any) -> None:
 def cmd_issue_view(args: Any) -> int:
     page_size = int(args.page_size)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
+    show = _parse_show_options(raw_values=list(getattr(args, "show", [])))
     client = GitHubClient()
     pager = TimelinePager(client)
 
@@ -97,12 +114,26 @@ def cmd_issue_view(args: Any) -> int:
     )
     shown_pages: set[int] = {1}
 
-    for line in render_header(context):
-        print(line)
-    for line in render_page(1, context, first_page):
-        print(line)
+    wrote_output = False
 
-    if last_page is not None:
+    def print_block(lines: list[str]) -> None:
+        nonlocal wrote_output
+        if not lines:
+            return
+        if wrote_output:
+            print()
+        for line in lines:
+            print(line)
+        wrote_output = True
+
+    if show.meta:
+        print_block(render_frontmatter(context))
+    if show.description:
+        print_block(render_description(context))
+    if show.timeline:
+        print_block(render_page(1, context, first_page))
+
+    if show.timeline and last_page is not None:
         trailing_pages: list[tuple[int, TimelinePage]] = []
         include_previous = context.total_pages > 2 and context.total_count % context.page_size != 0
         if include_previous:
@@ -124,9 +155,7 @@ def cmd_issue_view(args: Any) -> int:
         hidden_start = 2
         hidden_end = first_trailing_page - 1
         hidden_pages = list(range(hidden_start, hidden_end + 1)) if hidden_start <= hidden_end else []
-        print()
-        for line in render_hidden_gap(context, hidden_pages):
-            print(line)
+        print_block(render_hidden_gap(context, hidden_pages))
         if hidden_pages:
             print()
         for index, (page_number, page_data) in enumerate(trailing_pages):
@@ -135,11 +164,10 @@ def cmd_issue_view(args: Any) -> int:
             for line in render_page(page_number, context, page_data):
                 print(line)
 
-    print()
-    for line in render_expand_hints(context, shown_pages):
-        print(line)
-    for line in render_issue_actions(context):
-        print(line)
+    if show.timeline:
+        print_block(render_expand_hints(context, shown_pages))
+    if show.actions:
+        print_block(render_issue_actions(context))
 
     return 0
 
@@ -282,3 +310,37 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
                 details = True
 
     return _ExpandOptions(hidden=hidden, details=details)
+
+
+def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
+    if not raw_values:
+        return _ShowOptions()
+
+    selected: set[str] = set()
+    aliases: dict[str, set[str]] = {
+        "meta": {"meta"},
+        "description": {"description"},
+        "desc": {"description"},
+        "timeline": {"timeline"},
+        "actions": {"actions"},
+        "summary": {"meta", "description"},
+        "all": {"meta", "description", "timeline", "actions"},
+        "*": {"meta", "description", "timeline", "actions"},
+    }
+
+    for raw in raw_values:
+        for part in raw.split(","):
+            token = part.strip().lower()
+            if not token:
+                continue
+            mapped = aliases.get(token)
+            if mapped is None:
+                raise RuntimeError(f"unknown show option: {token}")
+            selected.update(mapped)
+
+    return _ShowOptions(
+        meta=("meta" in selected),
+        description=("description" in selected),
+        timeline=("timeline" in selected),
+        actions=("actions" in selected),
+    )
