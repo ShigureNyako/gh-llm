@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from gh_llm.commands.options import raise_unknown_option_value
 from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
@@ -677,6 +678,8 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
         "all": "all",
         "*": "all",
     }
+    valid_values = ["resolved", "hidden", "details", "all"]
+    alias_values = [alias for alias in aliases if alias not in valid_values and alias != "*"]
 
     for raw in raw_values:
         for part in raw.split(","):
@@ -685,7 +688,12 @@ def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
                 continue
             normalized = aliases.get(token)
             if normalized is None:
-                raise RuntimeError(f"unknown expand option: {token}")
+                raise_unknown_option_value(
+                    flag="expand",
+                    token=token,
+                    valid_values=valid_values,
+                    alias_values=alias_values,
+                )
             if normalized == "all":
                 resolved = True
                 hidden = True
@@ -717,6 +725,8 @@ def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
         "all": {"meta", "description", "timeline", "checks", "actions"},
         "*": {"meta", "description", "timeline", "checks", "actions"},
     }
+    valid_values = ["meta", "description", "timeline", "checks", "actions", "summary", "all"]
+    alias_values = [alias for alias in aliases if alias not in valid_values and alias != "*"]
 
     for raw in raw_values:
         for part in raw.split(","):
@@ -725,7 +735,12 @@ def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
                 continue
             mapped = aliases.get(token)
             if mapped is None:
-                raise RuntimeError(f"unknown show option: {token}")
+                raise_unknown_option_value(
+                    flag="show",
+                    token=token,
+                    valid_values=valid_values,
+                    alias_values=alias_values,
+                )
             selected.update(mapped)
 
     return _ShowOptions(

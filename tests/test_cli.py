@@ -1131,6 +1131,22 @@ def test_issue_view_show_summary_only(monkeypatch: pytest.MonkeyPatch, capsys: p
     assert "## Actions" not in out
 
 
+def test_pr_view_invalid_expand_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.run(["pr", "view", "77960", "--repo", "PaddlePaddle/Paddle", "--expand", "sss"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: unknown expand option: sss." in err
+    assert "Valid values: resolved, hidden, details, all." in err
+
+
+def test_issue_view_invalid_show_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.run(["issue", "view", "77924", "--repo", "PaddlePaddle/Paddle", "--show", "abc"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: unknown show option: abc." in err
+    assert "Valid values: meta, description, timeline, actions, summary, all." in err
+
+
 TEST_BASE_PAGE_SIZE = 2
 
 
