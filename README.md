@@ -51,7 +51,7 @@ gh extension install ShigureLab/gh-llm
 gh llm --help
 ```
 
-The extension entrypoint forwards to local repository path via `uvx --from <extension_repo_path> gh-llm ...`.
+The extension entrypoint forwards to local repository path via `uv run --project <extension_repo_path> gh-llm ...`.
 `gh llm ...` and `gh-llm ...` are equivalent command surfaces.
 
 ## Quick Start
@@ -65,6 +65,10 @@ gh llm pr view 77900 --repo PaddlePaddle/Paddle
 
 # Expand one hidden timeline page
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
+
+# Auto-expand folded content in default/timeline view
+gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,hidden
+gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle --expand all
 
 # Show full content for one event index
 gh-llm pr event 15 --pr 77900 --repo PaddlePaddle/Paddle
@@ -83,7 +87,14 @@ gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle
 gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
 gh-llm issue event 6 --issue 77924 --repo PaddlePaddle/Paddle
+gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand hidden,details
 ```
+
+`--expand` values:
+
+- PR: `resolved`, `hidden`, `details`, `all`
+- Issue: `hidden`, `details`, `all`
+- Supports comma-separated values and repeated flags.
 
 ### Comment / Thread Actions
 

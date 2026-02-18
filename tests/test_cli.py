@@ -1034,6 +1034,58 @@ def test_display_command_env_is_used_in_actions(
     assert "gh llm pr review-expand PRR_mock --pr 77928 --repo PaddlePaddle/Paddle" in out
 
 
+def test_pr_timeline_expand_with_expand_option(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "pr",
+            "timeline-expand",
+            "3",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--expand",
+            "resolved,hidden",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Review comments (3/3 shown):" in out
+    assert "resolved review comments are collapsed" not in out
+    assert "hidden review comments are collapsed" not in out
+
+
+def test_issue_timeline_expand_with_expand_hidden(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "issue",
+            "timeline-expand",
+            "1",
+            "--issue",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--expand",
+            "hidden",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "(comment hidden: outdated)" not in out
+
+
 TEST_BASE_PAGE_SIZE = 2
 
 

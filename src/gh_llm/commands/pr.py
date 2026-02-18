@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from gh_llm.github_api import GitHubClient
@@ -23,6 +24,13 @@ if TYPE_CHECKING:
 DEFAULT_DIFF_HUNK_LINES = 12
 
 
+@dataclass(frozen=True)
+class _ExpandOptions:
+    resolved: bool = False
+    hidden: bool = False
+    details: bool = False
+
+
 def register_pr_parser(subparsers: Any) -> None:
     pr_parser = subparsers.add_parser("pr", help="PR-related commands")
     pr_subparsers = pr_parser.add_subparsers(dest="pr_command")
@@ -34,6 +42,12 @@ def register_pr_parser(subparsers: Any) -> None:
     view_parser.add_argument("pr", nargs="?", help="PR number/url/branch")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     view_parser.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE, help="timeline entries per page")
+    view_parser.add_argument(
+        "--expand",
+        action="append",
+        default=[],
+        help="auto-expand folded content: resolved, hidden, details, all (comma-separated or repeatable)",
+    )
     view_parser.add_argument(
         "--diff-hunk-lines",
         type=int,
@@ -47,6 +61,12 @@ def register_pr_parser(subparsers: Any) -> None:
     timeline_expand_parser.add_argument("--pr", help="PR number/url/branch")
     timeline_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     timeline_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    timeline_expand_parser.add_argument(
+        "--expand",
+        action="append",
+        default=[],
+        help="auto-expand folded content: resolved, hidden, details, all (comma-separated or repeatable)",
+    )
     timeline_expand_parser.add_argument(
         "--diff-hunk-lines",
         type=int,
@@ -192,11 +212,19 @@ def register_pr_parser(subparsers: Any) -> None:
 def cmd_pr_view(args: Any) -> int:
     page_size = int(args.page_size)
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
+    expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
     client = GitHubClient()
     pager = TimelinePager(client)
 
     meta = client.resolve_pull_request(selector=args.pr, repo=args.repo)
-    context, first_page, last_page = pager.build_initial(meta, page_size=page_size, diff_hunk_lines=diff_hunk_lines)
+    context, first_page, last_page = pager.build_initial(
+        meta,
+        page_size=page_size,
+        show_resolved_details=expand.resolved,
+        show_minimized_details=expand.hidden,
+        show_details_blocks=expand.details,
+        diff_hunk_lines=diff_hunk_lines,
+    )
     shown_pages: set[int] = {1}
 
     for line in render_header(context):
@@ -213,6 +241,9 @@ def cmd_pr_view(args: Any) -> int:
                 meta=meta,
                 context=context,
                 page=previous_page_number,
+                show_resolved_details=expand.resolved,
+                show_minimized_details=expand.hidden,
+                show_details_blocks=expand.details,
                 diff_hunk_lines=diff_hunk_lines,
             )
             trailing_pages.append((previous_page_number, previous_page))
@@ -258,8 +289,17 @@ def cmd_pr_timeline_expand(args: Any) -> int:
     pager = TimelinePager(client)
     context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
+    expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
 
-    page = pager.fetch_page(meta=meta, context=context, page=int(args.page), diff_hunk_lines=diff_hunk_lines)
+    page = pager.fetch_page(
+        meta=meta,
+        context=context,
+        page=int(args.page),
+        show_resolved_details=expand.resolved,
+        show_minimized_details=expand.hidden,
+        show_details_blocks=expand.details,
+        diff_hunk_lines=diff_hunk_lines,
+    )
 
     for line in render_header(context):
         print(line)
@@ -578,6 +618,50 @@ def _resolve_diff_hunk_lines(*, args: Any, default: int) -> int | None:
     if value <= 0:
         return None
     return value
+
+
+def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:
+    resolved = False
+    hidden = False
+    details = False
+
+    aliases: dict[str, str] = {
+        "resolved": "resolved",
+        "resolve": "resolved",
+        "resolved_comments": "resolved",
+        "resolved-comments": "resolved",
+        "hidden": "hidden",
+        "hidden_comments": "hidden",
+        "hidden-comments": "hidden",
+        "minimized": "hidden",
+        "outdated": "hidden",
+        "details": "details",
+        "detail": "details",
+        "all": "all",
+        "*": "all",
+    }
+
+    for raw in raw_values:
+        for part in raw.split(","):
+            token = part.strip().lower()
+            if not token:
+                continue
+            normalized = aliases.get(token)
+            if normalized is None:
+                raise RuntimeError(f"unknown expand option: {token}")
+            if normalized == "all":
+                resolved = True
+                hidden = True
+                details = True
+                continue
+            if normalized == "resolved":
+                resolved = True
+            elif normalized == "hidden":
+                hidden = True
+            elif normalized == "details":
+                details = True
+
+    return _ExpandOptions(resolved=resolved, hidden=hidden, details=details)
 
 
 def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
