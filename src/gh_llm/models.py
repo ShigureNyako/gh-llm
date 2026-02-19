@@ -33,6 +33,21 @@ class PullRequestMeta:
     head_ref_oid: str | None = None
     head_ref_deleted: bool | None = None
     node_id: str | None = None
+    merge_state_status: str | None = None
+    mergeable: str | None = None
+    review_decision: str | None = None
+    requires_approving_reviews: bool | None = None
+    required_approving_review_count: int | None = None
+    requires_code_owner_reviews: bool | None = None
+    approved_review_count: int | None = None
+    requires_status_checks: bool | None = None
+    base_ref_name: str | None = None
+    base_ref_oid: str | None = None
+    merge_commit_allowed: bool | None = None
+    squash_merge_allowed: bool | None = None
+    rebase_merge_allowed: bool | None = None
+    co_author_trailers: tuple[str, ...] = ()
+    conflict_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,21 @@ class TimelineContext:
     head_ref_oid: str | None = None
     head_ref_deleted: bool | None = None
     pr_node_id: str | None = None
+    merge_state_status: str | None = None
+    mergeable: str | None = None
+    review_decision: str | None = None
+    requires_approving_reviews: bool | None = None
+    required_approving_review_count: int | None = None
+    requires_code_owner_reviews: bool | None = None
+    approved_review_count: int | None = None
+    requires_status_checks: bool | None = None
+    base_ref_name: str | None = None
+    base_ref_oid: str | None = None
+    merge_commit_allowed: bool | None = None
+    squash_merge_allowed: bool | None = None
+    rebase_merge_allowed: bool | None = None
+    co_author_trailers: tuple[str, ...] = ()
+    conflict_files: tuple[str, ...] = ()
     forward_after_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
     backward_before_by_page: dict[int, str | None] = field(default_factory=lambda: cast("dict[int, str | None]", {}))
 
@@ -129,6 +159,21 @@ class TimelineContext:
             "head_ref_oid": self.head_ref_oid,
             "head_ref_deleted": self.head_ref_deleted,
             "pr_node_id": self.pr_node_id,
+            "merge_state_status": self.merge_state_status,
+            "mergeable": self.mergeable,
+            "review_decision": self.review_decision,
+            "requires_approving_reviews": self.requires_approving_reviews,
+            "required_approving_review_count": self.required_approving_review_count,
+            "requires_code_owner_reviews": self.requires_code_owner_reviews,
+            "approved_review_count": self.approved_review_count,
+            "requires_status_checks": self.requires_status_checks,
+            "base_ref_name": self.base_ref_name,
+            "base_ref_oid": self.base_ref_oid,
+            "merge_commit_allowed": self.merge_commit_allowed,
+            "squash_merge_allowed": self.squash_merge_allowed,
+            "rebase_merge_allowed": self.rebase_merge_allowed,
+            "co_author_trailers": list(self.co_author_trailers),
+            "conflict_files": list(self.conflict_files),
             "forward_after_by_page": {str(k): v for k, v in self.forward_after_by_page.items()},
             "backward_before_by_page": {str(k): v for k, v in self.backward_before_by_page.items()},
         }
@@ -158,6 +203,43 @@ class TimelineContext:
             head_ref_oid=_as_str_optional(value.get("head_ref_oid")),
             head_ref_deleted=(None if value.get("head_ref_deleted") is None else bool(value.get("head_ref_deleted"))),
             pr_node_id=_as_str_optional(value.get("pr_node_id")),
+            merge_state_status=_as_str_optional(value.get("merge_state_status")),
+            mergeable=_as_str_optional(value.get("mergeable")),
+            review_decision=_as_str_optional(value.get("review_decision")),
+            requires_approving_reviews=(
+                None
+                if value.get("requires_approving_reviews") is None
+                else bool(value.get("requires_approving_reviews"))
+            ),
+            required_approving_review_count=(
+                None
+                if value.get("required_approving_review_count") is None
+                else _as_int(value.get("required_approving_review_count"), 0)
+            ),
+            requires_code_owner_reviews=(
+                None
+                if value.get("requires_code_owner_reviews") is None
+                else bool(value.get("requires_code_owner_reviews"))
+            ),
+            approved_review_count=(
+                None if value.get("approved_review_count") is None else _as_int(value.get("approved_review_count"), 0)
+            ),
+            requires_status_checks=(
+                None if value.get("requires_status_checks") is None else bool(value.get("requires_status_checks"))
+            ),
+            base_ref_name=_as_str_optional(value.get("base_ref_name")),
+            base_ref_oid=_as_str_optional(value.get("base_ref_oid")),
+            merge_commit_allowed=(
+                None if value.get("merge_commit_allowed") is None else bool(value.get("merge_commit_allowed"))
+            ),
+            squash_merge_allowed=(
+                None if value.get("squash_merge_allowed") is None else bool(value.get("squash_merge_allowed"))
+            ),
+            rebase_merge_allowed=(
+                None if value.get("rebase_merge_allowed") is None else bool(value.get("rebase_merge_allowed"))
+            ),
+            co_author_trailers=tuple(_as_str(item, "") for item in _as_list(value.get("co_author_trailers")) if item),
+            conflict_files=tuple(_as_str(item, "") for item in _as_list(value.get("conflict_files")) if item),
             forward_after_by_page={
                 int(k): None if v is None else str(v)
                 for k, v in _ensure_dict(value.get("forward_after_by_page")).items()
@@ -201,3 +283,9 @@ def _as_str_optional(value: object) -> str | None:
     if isinstance(value, str):
         return value
     return str(value)
+
+
+def _as_list(value: object) -> list[object]:
+    if isinstance(value, list):
+        return cast("list[object]", value)
+    return []

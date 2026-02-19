@@ -36,6 +36,25 @@ class GhResponder:
                 state = "CLOSED"
             elif pr_number == 77960:
                 state = "MERGED"
+            merge_state_status = "CLEAN"
+            mergeable = "MERGEABLE"
+            if pr_number == 77971:
+                merge_state_status = "DIRTY"
+                mergeable = "CONFLICTING"
+            commits_payload: dict[str, Any] = {"nodes": []}
+            if pr_number == 77972:
+                commits_payload = {
+                    "nodes": [
+                        {
+                            "messageHeadline": "Feature change",
+                            "messageBody": "Improvements\n\nCo-authored-by: Alice Example <alice@example.com>",
+                        },
+                        {
+                            "messageHeadline": "Follow-up",
+                            "messageBody": "Co-authored-by: Bob Example <bob@example.com>",
+                        },
+                    ]
+                }
             return FakeCompletedProcess(
                 json.dumps(
                     {
@@ -47,6 +66,9 @@ class GhResponder:
                         "isDraft": False,
                         "body": "This is PR description",
                         "updatedAt": "2026-02-16T09:00:00Z",
+                        "mergeStateStatus": merge_state_status,
+                        "mergeable": mergeable,
+                        "commits": commits_payload,
                         "reactionGroups": [{"content": "ROCKET", "users": {"totalCount": 1}}],
                     }
                 )
@@ -175,19 +197,25 @@ class GhResponder:
         if "pullRequest(number:$number){" in query and "id" in query and "timelineItems" not in query:
             if "headRefName" in query and "headRepository" in query:
                 pr_number = _extract_field_int(cmd, "number")
+                repo_payload: dict[str, Any] = {
+                    "mergeCommitAllowed": True,
+                    "squashMergeAllowed": True,
+                    "rebaseMergeAllowed": True,
+                }
                 if pr_number == 77827:
                     return FakeCompletedProcess(
                         json.dumps(
                             {
                                 "data": {
                                     "repository": {
+                                        **repo_payload,
                                         "pullRequest": {
                                             "id": "PR_kwDOA-qtos5closed",
                                             "merged": False,
                                             "headRefName": "feature/keep-branch",
                                             "headRefOid": "1111111111111111111111111111111111111111",
                                             "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
-                                        }
+                                        },
                                     }
                                 }
                             }
@@ -199,30 +227,34 @@ class GhResponder:
                             {
                                 "data": {
                                     "repository": {
+                                        **repo_payload,
                                         "pullRequest": {
                                             "id": "PR_kwDOA-qtos5merged",
                                             "merged": True,
                                             "headRefName": "feature/deleted-branch",
                                             "headRefOid": "2222222222222222222222222222222222222222",
                                             "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
-                                        }
+                                        },
                                     }
                                 }
                             }
                         )
                     )
+                if pr_number == 77972:
+                    repo_payload["rebaseMergeAllowed"] = False
                 return FakeCompletedProcess(
                     json.dumps(
                         {
                             "data": {
                                 "repository": {
+                                    **repo_payload,
                                     "pullRequest": {
                                         "id": "PR_kwDOA-qtos5xxxx",
                                         "merged": False,
                                         "headRefName": "feature/open-branch",
                                         "headRefOid": "3333333333333333333333333333333333333333",
                                         "headRepository": {"nameWithOwner": "PaddlePaddle/Paddle"},
-                                    }
+                                    },
                                 }
                             }
                         }
@@ -1348,6 +1380,98 @@ def test_pr_actions_for_closed_merged_show_branch_restore_only(
     assert "Delete head branch via gh:" not in out
     assert "Restore head branch via gh:" in out
     assert "gh api repos/PaddlePaddle/Paddle/git/refs -X POST" in out
+
+
+def test_pr_mergeability_show_conflict_status(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77971", "--repo", "PaddlePaddle/Paddle", "--show", "mergeability"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Mergeability" in out
+    assert "Status: Merging is blocked" in out
+    assert "Merge conflicts detected." in out
+    assert "pr conflict-files --pr 77971 --repo PaddlePaddle/Paddle" in out
+
+
+def test_pr_mergeability_for_merged_pr_shows_already_merged(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77960", "--repo", "PaddlePaddle/Paddle", "--show", "mergeability"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Mergeability" in out
+    assert "Status: Already merged" in out
+    assert "Merge actions:" not in out
+
+
+def test_pr_conflict_files_command(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    def _mock_detect_conflict_files(
+        self: github_api.GitHubClient,
+        *,
+        base_repo: str,
+        base_ref_name: str | None,
+        base_ref_oid: str | None,
+        head_repo: str,
+        head_ref_name: str | None,
+        head_ref_oid: str | None,
+    ) -> tuple[str, ...]:
+        del self, base_repo, base_ref_name, base_ref_oid, head_repo, head_ref_name, head_ref_oid
+        return ("python/a.py", "python/b.py")
+
+    monkeypatch.setattr(github_api.GitHubClient, "_detect_conflict_files", _mock_detect_conflict_files)
+    code = cli.run(["pr", "conflict-files", "--pr", "77971", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Conflict Files" in out
+    assert "- `python/a.py`" in out
+    assert "- `python/b.py`" in out
+
+
+def test_pr_mergeability_show_merge_actions_with_repo_method_filter(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77972", "--repo", "PaddlePaddle/Paddle", "--show", "mergeability"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Mergeability" in out
+    assert "Status: Merging is allowed" in out
+    assert "⌨ merge_subject: 'Timeline test (#77972)'" in out
+    assert "⌨ merge_body (default):" in out
+    assert "   <optional_merge_body>" in out
+    assert "Co-authored-by: Alice Example <alice@example.com>" in out
+    assert "Co-authored-by: Bob Example <bob@example.com>" in out
+    assert (
+        "⏎ merge via gh: `gh pr merge 77972 --repo PaddlePaddle/Paddle --merge --subject 'Timeline test (#77972)' --body '<merge_body>'`"
+        in out
+    )
+    assert (
+        "⏎ squash via gh: `gh pr merge 77972 --repo PaddlePaddle/Paddle --squash --subject 'Timeline test (#77972)' --body '<merge_body>'`"
+        in out
+    )
+    assert "⏎ rebase via gh: `gh pr merge 77972 --repo PaddlePaddle/Paddle --rebase`" not in out
+    assert "Disabled by repository settings: rebase" in out
+
+
+def test_pr_mergeability_rebase_action_has_no_subject_or_body(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--show", "mergeability"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "⏎ rebase via gh: `gh pr merge 77928 --repo PaddlePaddle/Paddle --rebase`" in out
+    assert "--rebase --subject" not in out
+    assert "--rebase --body" not in out
 
 
 def test_pr_view_invalid_expand_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ GRAPHQL_BACKOFF_MAX_SECONDS = 2.0
 DETAILS_BLOCK_RE = re.compile(r"(?is)<details\b[^>]*>(.*?)</details>")
 SUMMARY_RE = re.compile(r"(?is)<summary\b[^>]*>(.*?)</summary>")
 HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+CO_AUTHORED_BY_RE = re.compile(r"(?im)^\s*Co-authored-by:\s*([^\n<>]+?)\s*<([^<>\n]+)>\s*$")
+GIT_CONFLICT_FILE_RE = re.compile(r"^CONFLICT \([^)]*\): Merge conflict in (.+)$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -523,12 +526,32 @@ query($id:ID!){
 PULL_REQUEST_ACTIONS_META_QUERY = """
 query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
+    mergeCommitAllowed
+    squashMergeAllowed
+    rebaseMergeAllowed
     pullRequest(number:$number){
       id
       merged
+      reviewDecision
+      baseRefName
+      baseRefOid
       headRefName
       headRefOid
       headRepository{nameWithOwner}
+      reviews(last:100){
+        nodes{
+          state
+          author{login}
+        }
+      }
+      baseRef{
+        branchProtectionRule{
+          requiresApprovingReviews
+          requiredApprovingReviewCount
+          requiresCodeOwnerReviews
+          requiresStatusChecks
+        }
+      }
     }
   }
 }
@@ -561,6 +584,9 @@ class GitHubClient:
             "body",
             "updatedAt",
             "reactionGroups",
+            "mergeStateStatus",
+            "mergeable",
+            "commits",
         ]
         cmd = ["gh", "pr", "view"]
         if selector:
@@ -589,12 +615,33 @@ class GitHubClient:
         pr_node_id = _as_optional_str(pr_meta.get("id"))
         is_merged = bool(pr_meta.get("merged"))
         head_ref_name = _as_optional_str(pr_meta.get("headRefName"))
+        base_ref_name = _as_optional_str(pr_meta.get("baseRefName"))
+        base_ref_oid = _as_optional_str(pr_meta.get("baseRefOid"))
         head_repo_obj = _as_dict_optional(pr_meta.get("headRepository"))
         head_repo = _as_optional_str(head_repo_obj.get("nameWithOwner")) if head_repo_obj else None
         head_ref_oid = _as_optional_str(pr_meta.get("headRefOid"))
         head_ref_deleted: bool | None = None
         if state in {"CLOSED", "MERGED"}:
             head_ref_deleted = self._is_head_ref_deleted(head_repo=head_repo, head_ref_name=head_ref_name)
+        merge_state_status = _as_optional_str(payload.get("mergeStateStatus"))
+        mergeable = _as_optional_str(payload.get("mergeable"))
+        review_decision = _as_optional_str(pr_meta.get("reviewDecision"))
+        base_ref = _as_dict_optional(pr_meta.get("baseRef"))
+        bp_obj = _as_dict_optional(base_ref.get("branchProtectionRule")) if base_ref is not None else None
+        bp = _as_dict_optional(bp_obj)
+        requires_approving_reviews = None if bp is None else bool(bp.get("requiresApprovingReviews"))
+        required_approving_review_count = None
+        if bp is not None:
+            raw_required_count = bp.get("requiredApprovingReviewCount")
+            if isinstance(raw_required_count, int):
+                required_approving_review_count = raw_required_count
+        requires_code_owner_reviews = None if bp is None else bool(bp.get("requiresCodeOwnerReviews"))
+        requires_status_checks = None if bp is None else bool(bp.get("requiresStatusChecks"))
+        approved_review_count = _count_approved_reviewers(_as_dict_optional(pr_meta.get("reviews")))
+        merge_commit_allowed = _as_optional_bool(pr_meta.get("mergeCommitAllowed"))
+        squash_merge_allowed = _as_optional_bool(pr_meta.get("squashMergeAllowed"))
+        rebase_merge_allowed = _as_optional_bool(pr_meta.get("rebaseMergeAllowed"))
+        co_author_trailers = tuple(_extract_co_author_trailers(payload))
         return PullRequestMeta(
             ref=ref,
             title=title,
@@ -613,6 +660,21 @@ class GitHubClient:
             head_ref_oid=head_ref_oid,
             head_ref_deleted=head_ref_deleted,
             node_id=pr_node_id,
+            merge_state_status=merge_state_status,
+            mergeable=mergeable,
+            review_decision=review_decision,
+            requires_approving_reviews=requires_approving_reviews,
+            required_approving_review_count=required_approving_review_count,
+            requires_code_owner_reviews=requires_code_owner_reviews,
+            approved_review_count=approved_review_count,
+            requires_status_checks=requires_status_checks,
+            base_ref_name=base_ref_name,
+            base_ref_oid=base_ref_oid,
+            merge_commit_allowed=merge_commit_allowed,
+            squash_merge_allowed=squash_merge_allowed,
+            rebase_merge_allowed=rebase_merge_allowed,
+            co_author_trailers=co_author_trailers,
+            conflict_files=(),
         )
 
     def resolve_issue(self, selector: str | None, repo: str | None) -> PullRequestMeta:
@@ -1202,7 +1264,12 @@ mutation($id:ID!,$body:String!){
         )
         data_obj = _as_dict(payload.get("data"), context="graphql data")
         repo_obj = _as_dict(data_obj.get("repository"), context="repository")
-        return _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+        pr_obj = _as_dict(repo_obj.get("pullRequest"), context="pullRequest")
+        out: dict[str, object] = dict(pr_obj)
+        out["mergeCommitAllowed"] = repo_obj.get("mergeCommitAllowed")
+        out["squashMergeAllowed"] = repo_obj.get("squashMergeAllowed")
+        out["rebaseMergeAllowed"] = repo_obj.get("rebaseMergeAllowed")
+        return out
 
     def _is_head_ref_deleted(self, *, head_repo: str | None, head_ref_name: str | None) -> bool:
         if not head_repo or not head_ref_name:
@@ -1217,6 +1284,92 @@ mutation($id:ID!,$body:String!){
         data_obj = _as_dict(payload.get("data"), context="graphql data")
         repo_obj = _as_dict(data_obj.get("repository"), context="repository")
         return repo_obj.get("ref") is None
+
+    def _detect_conflict_files(
+        self,
+        *,
+        base_repo: str,
+        base_ref_name: str | None,
+        base_ref_oid: str | None,
+        head_repo: str,
+        head_ref_name: str | None,
+        head_ref_oid: str | None,
+    ) -> tuple[str, ...]:
+        if not base_ref_name or not head_ref_name:
+            return ()
+        origin_url = f"https://github.com/{base_repo}.git"
+        head_url = f"https://github.com/{head_repo}.git"
+        with tempfile.TemporaryDirectory(prefix="gh-llm-merge-conflict-") as temp_dir:
+            if not _run_plain_command(["git", "init", "-q"], cwd=temp_dir):
+                return ()
+            if not _run_plain_command(["git", "remote", "add", "origin", origin_url], cwd=temp_dir):
+                return ()
+            base_tracking = f"refs/remotes/origin/{base_ref_name}"
+            if not _run_plain_command(
+                [
+                    "git",
+                    "fetch",
+                    "--no-tags",
+                    "--filter=blob:none",
+                    "origin",
+                    f"+refs/heads/{base_ref_name}:{base_tracking}",
+                ],
+                cwd=temp_dir,
+            ):
+                return ()
+            head_remote = "origin"
+            if head_repo != base_repo:
+                if not _run_plain_command(["git", "remote", "add", "head", head_url], cwd=temp_dir):
+                    return ()
+                head_remote = "head"
+            if not _run_plain_command(
+                [
+                    "git",
+                    "fetch",
+                    "--no-tags",
+                    "--filter=blob:none",
+                    head_remote,
+                    f"+refs/heads/{head_ref_name}:refs/remotes/{head_remote}/{head_ref_name}",
+                ],
+                cwd=temp_dir,
+            ):
+                return ()
+            base_ref = f"refs/remotes/origin/{base_ref_name}"
+            head_ref = f"refs/remotes/{head_remote}/{head_ref_name}"
+            merge_tree = subprocess.run(
+                ["git", "merge-tree", "--write-tree", "--messages", base_ref, head_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+            )
+            merge_tree_output = "\n".join([merge_tree.stdout, merge_tree.stderr])
+            merge_tree_files = _parse_conflict_files_from_git_output(merge_tree_output)
+            if merge_tree_files:
+                return tuple(merge_tree_files)
+            merge_tree_names = subprocess.run(
+                ["git", "merge-tree", "--write-tree", "--name-only", base_ref, head_ref],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=temp_dir,
+            )
+            name_only_files = _parse_merge_tree_name_only_output(merge_tree_names.stdout)
+            if name_only_files:
+                return tuple(name_only_files)
+            return ()
+
+    def fetch_conflict_files(self, meta: PullRequestMeta) -> tuple[str, ...]:
+        if meta.state != "OPEN":
+            return ()
+        return self._detect_conflict_files(
+            base_repo=f"{meta.ref.owner}/{meta.ref.name}",
+            base_ref_name=meta.base_ref_name,
+            base_ref_oid=meta.base_ref_oid,
+            head_repo=(meta.head_ref_repo or f"{meta.ref.owner}/{meta.ref.name}"),
+            head_ref_name=meta.head_ref_name,
+            head_ref_oid=meta.head_ref_oid,
+        )
 
 
 def _run_graphql_connection(
@@ -2100,6 +2253,97 @@ def _as_list(value: object) -> list[object]:
     if isinstance(value, list):
         return cast("list[object]", value)
     return []
+
+
+def _count_approved_reviewers(reviews_obj: dict[str, object] | None) -> int | None:
+    if reviews_obj is None:
+        return None
+    nodes = _as_list(reviews_obj.get("nodes"))
+    approved_by: set[str] = set()
+    for raw in nodes:
+        review = _as_dict(raw, context="review")
+        if (_as_optional_str(review.get("state")) or "") != "APPROVED":
+            continue
+        author = _get_login(review.get("author"))
+        if author and author != "unknown":
+            approved_by.add(author)
+    return len(approved_by)
+
+
+def _extract_co_author_trailers(payload: dict[str, object]) -> list[str]:
+    commits_obj = _as_dict_optional(payload.get("commits"))
+    if commits_obj is None:
+        return []
+    trailers: list[str] = []
+    seen: set[str] = set()
+    for raw in _as_list(commits_obj.get("nodes")):
+        commit = _as_dict_optional(raw)
+        if commit is None:
+            continue
+        text_parts = [
+            _as_optional_str(commit.get("messageHeadline")) or "",
+            _as_optional_str(commit.get("messageBody")) or "",
+        ]
+        merged_text = "\n".join(part for part in text_parts if part)
+        for match in CO_AUTHORED_BY_RE.finditer(merged_text):
+            name = " ".join(match.group(1).split())
+            email = " ".join(match.group(2).split())
+            if not name or not email:
+                continue
+            trailer = f"Co-authored-by: {name} <{email}>"
+            normalized = trailer.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            trailers.append(trailer)
+    return trailers
+
+
+def _parse_conflict_files_from_git_output(output: str) -> list[str]:
+    files: list[str] = []
+    seen: set[str] = set()
+    for match in GIT_CONFLICT_FILE_RE.finditer(output):
+        path = match.group(1).strip()
+        if not path:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        files.append(path)
+    return files
+
+
+def _parse_merge_tree_name_only_output(output: str) -> list[str]:
+    files: list[str] = []
+    seen: set[str] = set()
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("warning:") or line.startswith("error:"):
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        files.append(line)
+    return files
+
+
+def _run_plain_command(cmd: list[str], *, cwd: str) -> bool:
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+    return result.returncode == 0
+
+
+def _as_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _as_optional_str(value: object) -> str | None:

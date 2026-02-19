@@ -224,6 +224,136 @@ def render_checks_section(
     return lines
 
 
+def render_mergeability_section(*, context: TimelineContext, checks: list[CheckItem]) -> list[str]:
+    lines = ["## Mergeability"]
+    repo = f"{context.owner}/{context.name}"
+    if context.is_merged or context.state == "MERGED":
+        lines.append("Status: Already merged")
+        details: list[str] = []
+        merge_state = (context.merge_state_status or "").upper()
+        mergeable = (context.mergeable or "").upper()
+        review_decision = (context.review_decision or "").upper()
+        if merge_state:
+            details.append(f"merge_state: {merge_state}")
+        if mergeable:
+            details.append(f"mergeable: {mergeable}")
+        if review_decision:
+            details.append(f"review_decision: {review_decision}")
+        if details:
+            lines.append("Details: " + ", ".join(details))
+        lines.append("")
+        return lines
+
+    merge_state = (context.merge_state_status or "").upper()
+    mergeable = (context.mergeable or "").upper()
+    review_decision = (context.review_decision or "").upper()
+
+    blockers: list[str] = []
+    has_merge_conflict = merge_state == "DIRTY" or mergeable == "CONFLICTING"
+    if has_merge_conflict:
+        blockers.append("Merge conflicts detected.")
+
+    failed_checks = [
+        item.name for item in checks if not item.passed and ("FAIL" in item.status or "ERROR" in item.status)
+    ]
+    pending_checks = [item.name for item in checks if not item.passed and item.name not in failed_checks]
+    if context.requires_status_checks:
+        if failed_checks:
+            blockers.append(
+                "Required checks may be failing: "
+                + ", ".join(failed_checks[:6])
+                + ("..." if len(failed_checks) > 6 else "")
+            )
+        elif pending_checks:
+            blockers.append(
+                "Required checks may still be pending: "
+                + ", ".join(pending_checks[:6])
+                + ("..." if len(pending_checks) > 6 else "")
+            )
+
+    if review_decision == "CHANGES_REQUESTED":
+        blockers.append("Changes requested by reviewers.")
+    elif review_decision == "REVIEW_REQUIRED":
+        blockers.append("Required approvals not met.")
+
+    if context.requires_approving_reviews and context.required_approving_review_count is not None:
+        approved = context.approved_review_count if context.approved_review_count is not None else 0
+        required = context.required_approving_review_count
+        if approved < required:
+            blockers.append(f"Approvals not enough: {approved}/{required}.")
+
+    if context.requires_code_owner_reviews and review_decision in {"REVIEW_REQUIRED", "CHANGES_REQUESTED", ""}:
+        blockers.append("Code owner review may be required but not satisfied.")
+
+    if blockers:
+        lines.append("Status: Merging is blocked")
+        lines.append("Reasons:")
+        for idx, reason in enumerate(blockers, start=1):
+            lines.append(f"{idx}. {reason}")
+        if has_merge_conflict and context.conflict_files:
+            lines.append("Conflicted files:")
+            max_show = 20
+            for path in context.conflict_files[:max_show]:
+                lines.append(f"- `{path}`")
+            if len(context.conflict_files) > max_show:
+                lines.append(f"- ... {len(context.conflict_files) - max_show} more files")
+        elif has_merge_conflict:
+            lines.append(
+                f"⏎ run `{display_command_with(f'pr conflict-files --pr {context.number} --repo {repo}')}` to detect conflicted files"
+            )
+    else:
+        lines.append("Status: Merging is allowed")
+
+    if context.state == "OPEN" and not blockers:
+        merge_subject = f"{context.title} (#{context.number})"
+        merge_subject_quoted = _shell_single_quote(merge_subject)
+        available_methods = [
+            ("merge", context.merge_commit_allowed),
+            ("squash", context.squash_merge_allowed),
+            ("rebase", context.rebase_merge_allowed),
+        ]
+        enabled_methods = [method for method, enabled in available_methods if enabled is True]
+        disabled_methods = [method for method, enabled in available_methods if enabled is False]
+        if enabled_methods:
+            lines.append("Merge actions:")
+            lines.append(f"⌨ merge_subject: '{merge_subject}'")
+            if context.co_author_trailers:
+                lines.append("⌨ merge_body (default):")
+                lines.append("   <optional_merge_body>")
+                lines.append("")
+                lines.extend(f"   {trailer}" for trailer in context.co_author_trailers)
+            else:
+                lines.append("⌨ merge_body: '<optional_merge_body>'")
+            for method in enabled_methods:
+                if method == "rebase":
+                    lines.append(f"⏎ rebase via gh: `gh pr merge {context.number} --repo {repo} --rebase`")
+                    continue
+                lines.append(
+                    f"⏎ {method} via gh: `gh pr merge {context.number} --repo {repo} --{method} --subject {merge_subject_quoted} --body '<merge_body>'`"
+                )
+        if disabled_methods:
+            lines.append(f"Disabled by repository settings: {', '.join(disabled_methods)}")
+
+    details: list[str] = []
+    if merge_state:
+        details.append(f"merge_state: {merge_state}")
+    if mergeable:
+        details.append(f"mergeable: {mergeable}")
+    if review_decision:
+        details.append(f"review_decision: {review_decision}")
+    if context.required_approving_review_count is not None:
+        approved = context.approved_review_count if context.approved_review_count is not None else 0
+        details.append(f"approvals: {approved}/{context.required_approving_review_count}")
+    if details:
+        lines.append("Details: " + ", ".join(details))
+    lines.append("")
+    return lines
+
+
+def _shell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
 def render_hidden_gap(context: TimelineContext, hidden_pages: list[int]) -> list[str]:
     if not hidden_pages:
         return []

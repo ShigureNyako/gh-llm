@@ -84,6 +84,9 @@ gh-llm pr review-expand PRR_xxx --threads 6-16 --pr 77900 --repo PaddlePaddle/Pa
 # Checks
 gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
+
+# Detect conflicted files on demand (for conflicted PRs)
+gh-llm pr conflict-files --pr 77971 --repo PaddlePaddle/Paddle
 ```
 
 ### Issue Reading
@@ -104,7 +107,7 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 
 `--show` values:
 
-- PR: `meta`, `description`, `timeline`, `checks`, `actions`, `all`
+- PR: `meta`, `description`, `timeline`, `checks`, `actions`, `mergeability`, `all`
 - Issue: `meta`, `description`, `timeline`, `actions`, `all`
 - Supports comma-separated values and repeated flags.
 - `summary` is supported as an alias for `meta,description`.

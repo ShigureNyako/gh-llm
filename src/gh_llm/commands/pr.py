@@ -18,6 +18,7 @@ from gh_llm.render import (
     render_frontmatter,
     render_header,
     render_hidden_gap,
+    render_mergeability_section,
     render_page,
     render_pr_actions,
 )
@@ -43,6 +44,7 @@ class _ShowOptions:
     timeline: bool = True
     checks: bool = True
     actions: bool = True
+    mergeability: bool = True
 
 
 def register_pr_parser(subparsers: Any) -> None:
@@ -60,7 +62,7 @@ def register_pr_parser(subparsers: Any) -> None:
         "--show",
         action="append",
         default=[],
-        help="show regions: meta, description, timeline, checks, actions, all (comma-separated or repeatable)",
+        help="show regions: meta, description, timeline, checks, actions, mergeability, all (comma-separated or repeatable)",
     )
     view_parser.add_argument(
         "--expand",
@@ -146,6 +148,14 @@ def register_pr_parser(subparsers: Any) -> None:
     checks_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     checks_parser.add_argument("--all", action="store_true", help="show all checks including passed")
     checks_parser.set_defaults(handler=cmd_pr_checks)
+
+    conflicts_parser = pr_subparsers.add_parser(
+        "conflict-files",
+        help="detect and show conflicted files for a PR (on demand; may take longer on large repos)",
+    )
+    conflicts_parser.add_argument("--pr", help="PR number/url/branch")
+    conflicts_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    conflicts_parser.set_defaults(handler=cmd_pr_conflict_files)
 
     thread_reply_parser = pr_subparsers.add_parser("thread-reply", help="reply to a pull request review thread")
     thread_reply_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
@@ -314,8 +324,10 @@ def cmd_pr_view(args: Any) -> int:
 
     if show.timeline:
         print_block(render_expand_hints(context, shown_pages))
-    if show.checks:
+    checks: list[Any] = []
+    if show.checks or show.mergeability:
         checks = client.fetch_checks(meta.ref) if meta.state == "OPEN" else []
+    if show.checks:
         print_block(
             render_checks_section(
                 context=context,
@@ -332,6 +344,8 @@ def cmd_pr_view(args: Any) -> int:
                 include_manage=show.actions,
             )
         )
+    if show.mergeability:
+        print_block(render_mergeability_section(context=context, checks=checks))
 
     return 0
 
@@ -493,6 +507,21 @@ def cmd_pr_checks(args: Any) -> int:
         is_open=(meta.state == "OPEN"),
     ):
         print(line)
+    return 0
+
+
+def cmd_pr_conflict_files(args: Any) -> int:
+    client = GitHubClient()
+    meta = _resolve_pr_meta(client=client, args=args)
+    files = client.fetch_conflict_files(meta)
+    repo = f"{meta.ref.owner}/{meta.ref.name}"
+    print("## Conflict Files")
+    print(f"PR: {meta.ref.number} ({repo})")
+    if not files:
+        print("(no conflicted files detected, or unable to detect)")
+        return 0
+    for path in files:
+        print(f"- `{path}`")
     return 0
 
 
@@ -758,11 +787,13 @@ def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
         "timeline": {"timeline"},
         "checks": {"checks"},
         "actions": {"actions"},
+        "mergeability": {"mergeability"},
+        "merge": {"mergeability"},
         "summary": {"meta", "description"},
-        "all": {"meta", "description", "timeline", "checks", "actions"},
-        "*": {"meta", "description", "timeline", "checks", "actions"},
+        "all": {"meta", "description", "timeline", "checks", "actions", "mergeability"},
+        "*": {"meta", "description", "timeline", "checks", "actions", "mergeability"},
     }
-    valid_values = ["meta", "description", "timeline", "checks", "actions", "summary", "all"]
+    valid_values = ["meta", "description", "timeline", "checks", "actions", "mergeability", "summary", "all"]
     alias_values = [alias for alias in aliases if alias not in valid_values and alias != "*"]
 
     for raw in raw_values:
@@ -786,6 +817,7 @@ def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
         timeline=("timeline" in selected),
         checks=("checks" in selected),
         actions=("actions" in selected),
+        mergeability=("mergeability" in selected),
     )
 
 
