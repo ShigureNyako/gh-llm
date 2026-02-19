@@ -478,6 +478,7 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "PRRT_mock_1" in out
     assert "The error message could be more helpful." in out
     assert "Reactions: ❤️ x1" in out
+    assert "[outdated] python/test_file.py:L23" in out
     assert "Suggested Change:" in out
     assert "@@ python/test_file.py:L22 @@" in out
     assert "+new_api_call()" in out
@@ -1246,7 +1247,7 @@ def test_pr_timeline_expand_with_expand_option(
             "--page-size",
             "2",
             "--expand",
-            "resolved,outdated,minimized",
+            "resolved,minimized",
         ]
     )
     assert code == 0
@@ -1479,7 +1480,7 @@ def test_pr_view_invalid_expand_error_lists_valid_values(capsys: pytest.CaptureF
     assert code == 1
     err = capsys.readouterr().err
     assert "error: unknown expand option: sss." in err
-    assert "Valid values: resolved, outdated, minimized, details, all." in err
+    assert "Valid values: resolved, minimized, details, all." in err
 
 
 def test_pr_view_hidden_expand_alias_removed(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1487,6 +1488,14 @@ def test_pr_view_hidden_expand_alias_removed(capsys: pytest.CaptureFixture[str])
     assert code == 1
     err = capsys.readouterr().err
     assert "error: unknown expand option: hidden." in err
+
+
+def test_pr_view_outdated_expand_option_removed(capsys: pytest.CaptureFixture[str]) -> None:
+    code = cli.run(["pr", "view", "77960", "--repo", "PaddlePaddle/Paddle", "--expand", "outdated"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: unknown expand option: outdated." in err
+    assert "Valid values: resolved, minimized, details, all." in err
 
 
 def test_issue_view_invalid_show_error_lists_valid_values(capsys: pytest.CaptureFixture[str]) -> None:

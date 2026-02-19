@@ -70,7 +70,7 @@ gh-llm pr view 77900 --repo PaddlePaddle/Paddle --show timeline,checks
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle
 
 # Auto-expand folded content in default/timeline view
-gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,outdated,minimized
+gh-llm pr view 77900 --repo PaddlePaddle/Paddle --expand resolved,minimized
 gh-llm pr timeline-expand 2 --pr 77900 --repo PaddlePaddle/Paddle --expand all
 
 # Show full content for one comment node id
@@ -101,7 +101,7 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 
 `--expand` values:
 
-- PR: `resolved`, `outdated`, `minimized`, `details`, `all`
+- PR: `resolved`, `minimized`, `details`, `all`
 - Issue: `minimized`, `details`, `all`
 - Supports comma-separated values and repeated flags.
 

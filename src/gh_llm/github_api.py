@@ -839,25 +839,23 @@ class GitHubClient:
                 comments_obj = _as_dict_optional(thread.get("comments"))
                 if comments_obj is None:
                     continue
-                thread_comments: list[dict[str, object]] = []
-                review_ids: set[str] = set()
+                comments_by_review: dict[str, list[dict[str, object]]] = {}
                 for raw_comment in _as_list(comments_obj.get("nodes")):
                     comment = _as_dict(raw_comment, context="reviewThread comment")
-                    thread_comments.append(comment)
                     review_obj = _as_dict_optional(comment.get("pullRequestReview"))
                     review_id = _as_optional_str(review_obj.get("id")) if review_obj is not None else None
                     if review_id:
-                        review_ids.add(review_id)
+                        comments_by_review.setdefault(review_id, []).append(comment)
 
-                if not thread_comments or not review_ids:
+                if not comments_by_review:
                     continue
 
-                thread_payload: dict[str, object] = {
-                    "id": thread_id,
-                    "isResolved": is_resolved,
-                    "comments": thread_comments,
-                }
-                for review_id in review_ids:
+                for review_id, review_comments in comments_by_review.items():
+                    thread_payload: dict[str, object] = {
+                        "id": thread_id,
+                        "isResolved": is_resolved,
+                        "comments": review_comments,
+                    }
                     by_review.setdefault(review_id, []).append(thread_payload)
 
             page_info = _as_dict(threads_obj.get("pageInfo"), context="reviewThreads pageInfo")
@@ -1951,19 +1949,12 @@ def _render_review_thread_block(
         comment = _as_dict(raw_comment, context="review comment")
         comment_id = _as_optional_str(comment.get("id")) or "(unknown comment id)"
         is_minimized = bool(comment.get("isMinimized"))
-        is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
-        hide_by_outdated = is_outdated and not show_outdated_details
-        hide_by_minimized = is_minimized and not show_minimized_details
-        if hide_by_outdated or hide_by_minimized:
+        if is_minimized and not show_minimized_details:
             minimized_hidden_count += 1
             reasons: list[str] = []
-            if hide_by_outdated:
-                minimized_reasons.add("outdated")
-                reasons.append("outdated")
-            if hide_by_minimized:
-                reason = _format_minimized_reason(comment.get("minimizedReason"))
-                minimized_reasons.add(reason)
-                reasons.append(reason)
+            reason = _format_minimized_reason(comment.get("minimizedReason"))
+            minimized_reasons.add(reason)
+            reasons.append(reason)
             reason_text = ", ".join(sorted(set(reasons)))
             comment_expand_cmd = display_command_with(
                 f"pr comment-expand {comment_id} --pr {ref.number} --repo {ref.owner}/{ref.name}"
@@ -2009,7 +2000,7 @@ def _build_review_minimized_summary(
     show_outdated_details: bool,
     show_minimized_details: bool,
 ) -> tuple[int, str | None]:
-    if show_outdated_details and show_minimized_details:
+    if show_minimized_details:
         return 0, None
     reasons: set[str] = set()
     count = 0
@@ -2020,16 +2011,10 @@ def _build_review_minimized_summary(
         for raw_comment in _as_list(thread.get("comments")):
             comment = _as_dict(raw_comment, context="review comment for minimized summary")
             is_minimized = bool(comment.get("isMinimized"))
-            is_outdated = bool(comment.get("outdated")) or bool(comment.get("isOutdated"))
-            hide_by_outdated = is_outdated and not show_outdated_details
-            hide_by_minimized = is_minimized and not show_minimized_details
-            if not (hide_by_outdated or hide_by_minimized):
+            if not (is_minimized and not show_minimized_details):
                 continue
             count += 1
-            if hide_by_outdated:
-                reasons.add("outdated")
-            if hide_by_minimized:
-                reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
+            reasons.add(_format_minimized_reason(comment.get("minimizedReason")))
     if count == 0:
         return 0, None
     return count, ", ".join(sorted(reasons))
@@ -2073,7 +2058,8 @@ def _render_review_comment_block(
     if rendered_body and not show_details_blocks:
         rendered_body, details_collapsed_count = _collapse_details_blocks(rendered_body)
 
-    lines = [f"- [{index}] {path}{line} by @{author} at {created_at}"]
+    outdated_badge = " [outdated]" if (bool(comment.get("outdated")) or bool(comment.get("isOutdated"))) else ""
+    lines = [f"- [{index}]{outdated_badge} {path}{line} by @{author} at {created_at}"]
     if rendered_body:
         lines.append("  Comment:")
         lines.extend(_indented_tag_block("comment", rendered_body, indent="  "))
