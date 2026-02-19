@@ -631,6 +631,25 @@ def test_web_like_extra_timeline_events_are_rendered(
     assert "push/force" in out
 
 
+def test_title_renamed_event_is_rendered(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
+
+    code = cli.run(["pr", "timeline-expand", "7", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pr/title-edited" in out
+    assert "title changed" in out
+    assert "from: Old title" in out
+    assert "to: New title" in out
+
+
 def test_issue_view_and_expand_use_real_cursor_pagination(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1209,6 +1228,14 @@ def _events_with_web_like_extras() -> list[dict[str, Any]]:
             "ref": {"name": "feature-branch"},
             "beforeCommit": {"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "afterCommit": {"oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        },
+        {
+            "__typename": "RenamedTitleEvent",
+            "id": "rt1",
+            "createdAt": "2026-02-14T15:16:00Z",
+            "actor": {"login": "author1"},
+            "previousTitle": "Old title",
+            "currentTitle": "New title",
         },
     ]
 

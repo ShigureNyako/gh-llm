@@ -38,7 +38,7 @@ FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -107,6 +107,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
           }
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
           ... on HeadRefForcePushedEvent{
             id
             createdAt
@@ -129,7 +130,7 @@ ISSUE_FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -188,6 +189,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
           }
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
           ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
           ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
@@ -201,7 +203,7 @@ BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -270,6 +272,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
           }
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
           ... on HeadRefForcePushedEvent{
             id
             createdAt
@@ -292,7 +295,7 @@ ISSUE_BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -351,6 +354,7 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
           }
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
+          ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
           ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
           ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
@@ -1702,6 +1706,23 @@ def _parse_node(
             actor=_get_actor_display(node.get("actor")),
             summary=f"removed label `{label}`",
             source_id=_as_optional_str(node.get("id")) or "label/remove",
+        )
+
+    if typename == "RenamedTitleEvent":
+        previous_title = (_as_optional_str(node.get("previousTitle")) or "").strip()
+        current_title = (_as_optional_str(node.get("currentTitle")) or "").strip()
+        if previous_title and current_title:
+            summary = f"title changed\nfrom: {previous_title}\nto: {current_title}"
+        elif current_title:
+            summary = f"title changed\nto: {current_title}"
+        else:
+            summary = "title changed"
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind=f"{subject_kind}/title-edited",
+            actor=_get_actor_display(node.get("actor")),
+            summary=summary,
+            source_id=_as_optional_str(node.get("id")) or f"{subject_kind}/title-edited",
         )
 
     if typename == "HeadRefForcePushedEvent":
