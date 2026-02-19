@@ -391,7 +391,7 @@ class GhResponder:
 
 
 def test_version() -> None:
-    assert __version__ == "0.1.6"
+    assert __version__ == "0.1.7"
 
 
 def test_parse_event_indexes_batch() -> None:
