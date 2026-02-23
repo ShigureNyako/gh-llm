@@ -59,6 +59,7 @@ class TimelinePager:
             is_draft=meta.is_draft,
             body=meta.body,
             updated_at=meta.updated_at,
+            labels=meta.labels,
             kind=meta.kind,
             pr_reactions_summary=meta.reactions_summary,
             can_edit_pr_body=meta.can_edit_body,

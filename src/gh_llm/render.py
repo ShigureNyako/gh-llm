@@ -32,6 +32,7 @@ def render_frontmatter(context: TimelineContext) -> list[str]:
         f"url: {context.url}",
         f"author: {context.author}",
         f"state: {context.state}",
+        f"labels: {json.dumps(list(context.labels), ensure_ascii=False)}",
         f"draft: {str(context.is_draft).lower()}",
         f"updated_at: {context.updated_at}",
         f"timeline_events: {context.total_count}",

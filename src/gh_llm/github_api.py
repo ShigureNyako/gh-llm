@@ -659,6 +659,7 @@ class GitHubClient:
             "isDraft",
             "body",
             "updatedAt",
+            "labels",
             "reactionGroups",
             "mergeStateStatus",
             "mergeable",
@@ -680,6 +681,7 @@ class GitHubClient:
         is_draft = bool(payload.get("isDraft"))
         body = _as_optional_str(payload.get("body")) or ""
         updated_at = _as_optional_str(payload.get("updatedAt")) or ""
+        labels = tuple(_extract_label_names(payload))
         reactions_summary = _format_reactions(payload.get("reactionGroups"))
 
         owner, name = _parse_owner_repo(url)
@@ -727,6 +729,7 @@ class GitHubClient:
             is_draft=is_draft,
             body=body,
             updated_at=updated_at,
+            labels=labels,
             kind="pr",
             reactions_summary=reactions_summary,
             can_edit_body=can_edit_body,
@@ -762,6 +765,7 @@ class GitHubClient:
             "state",
             "body",
             "updatedAt",
+            "labels",
             "reactionGroups",
         ]
         cmd = ["gh", "issue", "view"]
@@ -779,6 +783,7 @@ class GitHubClient:
         state = _as_optional_str(payload.get("state")) or "UNKNOWN"
         body = _as_optional_str(payload.get("body")) or ""
         updated_at = _as_optional_str(payload.get("updatedAt")) or ""
+        labels = tuple(_extract_label_names(payload))
         reactions_summary = _format_reactions(payload.get("reactionGroups"))
 
         owner, name = _parse_owner_repo(url)
@@ -795,6 +800,7 @@ class GitHubClient:
             is_draft=False,
             body=body,
             updated_at=updated_at,
+            labels=labels,
             kind="issue",
             reactions_summary=reactions_summary,
             can_edit_body=can_edit_body,
@@ -2425,6 +2431,18 @@ def _extract_co_author_trailers(payload: dict[str, object]) -> list[str]:
             seen.add(normalized)
             trailers.append(trailer)
     return trailers
+
+
+def _extract_label_names(payload: dict[str, object]) -> list[str]:
+    out: list[str] = []
+    for label in _as_list(payload.get("labels")):
+        label_dict = _as_dict_optional(label)
+        if label_dict is None:
+            continue
+        name = _as_optional_str(label_dict.get("name"))
+        if name:
+            out.append(name)
+    return out
 
 
 def _parse_conflict_files_from_git_output(output: str) -> list[str]:
