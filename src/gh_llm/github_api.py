@@ -130,7 +130,7 @@ ISSUE_FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,MARKED_AS_DUPLICATE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -190,6 +190,42 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
+          ... on MarkedAsDuplicateEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            canonical{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+            duplicate{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
           ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
           ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
@@ -295,7 +331,7 @@ ISSUE_BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
     issue(number:$number){
-      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,MARKED_AS_DUPLICATE_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -355,6 +391,42 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
           ... on LabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on UnlabeledEvent{ id createdAt actor{login ... on User{name}} label{name} }
           ... on RenamedTitleEvent{ id createdAt actor{login ... on User{name}} previousTitle currentTitle }
+          ... on MarkedAsDuplicateEvent{
+            id
+            createdAt
+            actor{login ... on User{name}}
+            isCrossRepository
+            canonical{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+            duplicate{
+              __typename
+              ... on PullRequest{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+              ... on Issue{
+                number
+                title
+                author{login ... on User{name}}
+                repository{nameWithOwner}
+              }
+            }
+          }
           ... on ClosedEvent{ id createdAt actor{login ... on User{name}} }
           ... on ReopenedEvent{ id createdAt actor{login ... on User{name}} }
         }
@@ -1723,6 +1795,55 @@ def _parse_node(
             actor=_get_actor_display(node.get("actor")),
             summary=summary,
             source_id=_as_optional_str(node.get("id")) or f"{subject_kind}/title-edited",
+        )
+
+    if typename == "MarkedAsDuplicateEvent":
+        actor = _get_actor_display(node.get("actor"))
+        is_cross = bool(node.get("isCrossRepository"))
+        canonical = _reference_subject_summary(_as_dict_optional(node.get("canonical")))
+        duplicate = _reference_subject_summary(_as_dict_optional(node.get("duplicate")))
+        lines: list[str] = []
+        if canonical is not None and duplicate is not None:
+            if canonical.number == ref.number and canonical.repo == f"{ref.owner}/{ref.name}":
+                if duplicate.type == "PullRequest":
+                    lines.append(
+                        f"marked PR #{duplicate.number} {duplicate.detail} ({duplicate.repo}) as duplicate of this issue"
+                    )
+                    lines.append(
+                        f"⏎ view: `{display_command_with(f'pr view {duplicate.number} --repo {duplicate.repo}')}`"
+                    )
+                else:
+                    lines.append(
+                        f"marked issue #{duplicate.number} {duplicate.detail} ({duplicate.repo}) as duplicate of this issue"
+                    )
+                    lines.append(
+                        f"⏎ view: `{display_command_with(f'issue view {duplicate.number} --repo {duplicate.repo}')}`"
+                    )
+            else:
+                if canonical.type == "PullRequest":
+                    lines.append(
+                        f"marked this item as duplicate of PR #{canonical.number} {canonical.detail} ({canonical.repo})"
+                    )
+                    lines.append(
+                        f"⏎ view: `{display_command_with(f'pr view {canonical.number} --repo {canonical.repo}')}`"
+                    )
+                else:
+                    lines.append(
+                        f"marked this item as duplicate of issue #{canonical.number} {canonical.detail} ({canonical.repo})"
+                    )
+                    lines.append(
+                        f"⏎ view: `{display_command_with(f'issue view {canonical.number} --repo {canonical.repo}')}`"
+                    )
+        else:
+            lines.append("marked duplicate relationship")
+        if is_cross:
+            lines.append("cross-repository duplicate marker")
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind=f"{subject_kind}/marked-as-duplicate",
+            actor=actor,
+            summary="\n".join(lines),
+            source_id=_as_optional_str(node.get("id")) or f"{subject_kind}/marked-as-duplicate",
         )
 
     if typename == "HeadRefForcePushedEvent":

@@ -687,6 +687,12 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "cross-reference by @alice (Alice)" in out
     assert "gh-llm pr view 77900 --repo PaddlePaddle/Paddle" in out
     assert "issue/closed by @ShigureNyako" in out
+    assert "issue/marked-as-duplicate by @SigureMo (Nyakku Shigure)" in out
+    assert (
+        'marked issue #77925 "Duplicate issue" by @alice (Alice) (PaddlePaddle/Paddle) as duplicate of this issue'
+        in out
+    )
+    assert "gh-llm issue view 77925 --repo PaddlePaddle/Paddle" in out
 
     code = cli.run(
         ["issue", "timeline-expand", "2", "--issue", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"]
@@ -1551,13 +1557,6 @@ def _issue_events() -> list[dict[str, Any]]:
             "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 1}}],
         },
         {
-            "__typename": "LabeledEvent",
-            "id": "il1",
-            "createdAt": "2026-02-13T11:00:00Z",
-            "actor": {"login": "triager"},
-            "label": {"name": "kind/question"},
-        },
-        {
             "__typename": "CrossReferencedEvent",
             "id": "icr1",
             "createdAt": "2026-02-13T12:00:00Z",
@@ -1587,6 +1586,27 @@ def _issue_events() -> list[dict[str, Any]]:
             "id": "iclose1",
             "createdAt": "2026-02-13T14:00:00Z",
             "actor": {"login": "ShigureNyako"},
+        },
+        {
+            "__typename": "MarkedAsDuplicateEvent",
+            "id": "made1",
+            "createdAt": "2026-02-13T14:10:00Z",
+            "actor": {"login": "SigureMo", "name": "Nyakku Shigure"},
+            "isCrossRepository": False,
+            "canonical": {
+                "__typename": "Issue",
+                "number": 77924,
+                "title": "Issue timeline test",
+                "author": {"login": "ShigureNyako"},
+                "repository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+            },
+            "duplicate": {
+                "__typename": "Issue",
+                "number": 77925,
+                "title": "Duplicate issue",
+                "author": {"login": "alice", "name": "Alice"},
+                "repository": {"nameWithOwner": "PaddlePaddle/Paddle"},
+            },
         },
     ]
 
