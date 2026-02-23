@@ -54,6 +54,14 @@ gh llm --help
 The extension entrypoint forwards to local repository path via `uv run --project <extension_repo_path> gh-llm ...`.
 `gh llm ...` and `gh-llm ...` are equivalent command surfaces.
 
+## Install Skill
+
+If you want the reusable GitHub conversation skill, install it directly from this repo:
+
+```bash
+npx skills add https://github.com/ShigureLab/gh-llm --skill github-conversation
+```
+
 ## Quick Start
 
 ### PR Reading
