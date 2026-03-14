@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from gh_llm.commands.options import raise_unknown_option_value
@@ -241,10 +243,29 @@ def register_pr_parser(subparsers: Any) -> None:
         default="COMMENT",
         help="review event type",
     )
-    review_submit_parser.add_argument("--body", default="", help="review summary body")
+    review_submit_body_group = review_submit_parser.add_mutually_exclusive_group()
+    review_submit_body_group.add_argument("--body", default="", help="review summary body")
+    review_submit_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read review summary body from file (use `-` to read from standard input)",
+    )
     review_submit_parser.add_argument("--pr", help="PR number/url/branch")
     review_submit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_submit_parser.set_defaults(handler=cmd_pr_review_submit)
+
+
+def _read_body_file(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _resolve_review_submit_body(args: Any) -> str:
+    body_file = getattr(args, "body_file", None)
+    if body_file:
+        return _read_body_file(str(body_file))
+    return str(getattr(args, "body", ""))
 
 
 def cmd_pr_view(args: Any) -> int:
@@ -680,7 +701,7 @@ def cmd_pr_review_suggest(args: Any) -> int:
 def cmd_pr_review_submit(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
-    body = str(args.body)
+    body = _resolve_review_submit_body(args)
     review_id, review_state = client.submit_pull_request_review(
         ref=meta.ref,
         event=str(args.event),
