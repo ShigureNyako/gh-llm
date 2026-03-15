@@ -867,6 +867,61 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
 
 
+def test_pr_review_comment_accepts_deleted_file_left_side(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_deleted_file_diff(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/deleted_file.py b/python/deleted_file.py",
+                        "deleted file mode 100644",
+                        "index 1111111..0000000",
+                        "--- a/python/deleted_file.py",
+                        "+++ /dev/null",
+                        "@@ -1,2 +0,0 @@",
+                        "-old_api_call()",
+                        "-legacy_cleanup()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/deleted_file.py",
+            "--line",
+            "1",
+            "--side",
+            "LEFT",
+            "--body",
+            "please confirm deletion",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "thread: PRRT_new_1" in out
+    assert "status: commented" in out
+
+
 def test_pr_review_comment_null_thread_error_is_precise(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

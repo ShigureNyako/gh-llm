@@ -868,6 +868,7 @@ class _DiffHunk:
         *,
         left_commentable_lines: set[int],
         right_commentable_lines: set[int],
+        match_paths: set[str],
     ) -> None:
         self.path = path
         self.header = header
@@ -875,6 +876,7 @@ class _DiffHunk:
         self.lines = lines
         self.left_commentable_lines = left_commentable_lines
         self.right_commentable_lines = right_commentable_lines
+        self.match_paths = match_paths
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
@@ -882,7 +884,8 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)
 
 def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     hunks: list[_DiffHunk] = []
-    current_path = ""
+    current_old_path = ""
+    current_new_path = ""
     current_hunk_header = ""
     current_hunk_lines: list[str] = []
     current_old_line = 0
@@ -892,19 +895,31 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     current_left_commentable_lines: set[int] = set()
     current_right_commentable_lines: set[int] = set()
 
+    def resolve_hunk_path() -> tuple[str, set[str]]:
+        match_paths = {path for path in (current_old_path, current_new_path) if path}
+        if current_new_path:
+            return current_new_path, match_paths
+        if current_old_path:
+            return current_old_path, match_paths
+        return "", match_paths
+
     def flush() -> None:
         nonlocal current_hunk_header, current_hunk_lines, current_anchor, current_fallback_anchor
         nonlocal current_left_commentable_lines, current_right_commentable_lines
-        if current_path and current_hunk_header and current_hunk_lines:
-            anchor_line = current_anchor if current_anchor > 0 else current_fallback_anchor if current_fallback_anchor > 0 else 1
+        path, match_paths = resolve_hunk_path()
+        if path and current_hunk_header and current_hunk_lines:
+            anchor_line = (
+                current_anchor if current_anchor > 0 else current_fallback_anchor if current_fallback_anchor > 0 else 1
+            )
             hunks.append(
                 _DiffHunk(
-                    path=current_path,
+                    path=path,
                     header=current_hunk_header,
                     anchor_line=anchor_line,
                     lines=current_hunk_lines.copy(),
                     left_commentable_lines=current_left_commentable_lines.copy(),
                     right_commentable_lines=current_right_commentable_lines.copy(),
+                    match_paths=match_paths,
                 )
             )
         current_hunk_header = ""
@@ -917,13 +932,16 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
             flush()
+            current_old_path = ""
+            current_new_path = ""
             continue
-        if raw.startswith("--- a/"):
+        if raw.startswith("--- "):
             flush()
+            current_old_path = "" if raw == "--- /dev/null" else raw[len("--- a/") :]
             continue
-        if raw.startswith("+++ b/"):
+        if raw.startswith("+++ "):
             flush()
-            current_path = raw[len("+++ b/") :]
+            current_new_path = "" if raw == "+++ /dev/null" else raw[len("+++ b/") :]
             continue
 
         if raw.startswith("@@ "):
@@ -968,7 +986,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
 def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str, line: int, side: str) -> None:
     diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
     hunks = _extract_diff_hunks(diff)
-    path_hunks = [hunk for hunk in hunks if hunk.path == path]
+    path_hunks = [hunk for hunk in hunks if path in hunk.match_paths]
     if not path_hunks:
         raise RuntimeError(f"path is not part of the PR diff: {path}")
 
@@ -976,9 +994,7 @@ def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str
         {
             candidate
             for hunk in path_hunks
-            for candidate in (
-                hunk.right_commentable_lines if side == "RIGHT" else hunk.left_commentable_lines
-            )
+            for candidate in (hunk.right_commentable_lines if side == "RIGHT" else hunk.left_commentable_lines)
         }
     )
     if line in commentable_lines:
