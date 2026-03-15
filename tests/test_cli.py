@@ -824,6 +824,84 @@ def test_graphql_eof_retries_with_backoff(
     assert state["failed_once"] is True
 
 
+def test_pr_review_submit_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "review.md"
+    body_file.write_text("please address comments from file\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "review-submit",
+            "--event",
+            "REQUEST_CHANGES",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: submitted" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(
+        call
+        for call in graphql_calls
+        if (
+            "submitPullRequestReview" in _extract_form(call, "query")
+            or "addPullRequestReview" in _extract_form(call, "query")
+        )
+    )
+    assert _extract_field(review_call, "body") == "please address comments from file\n"
+
+
+def test_pr_review_submit_supports_body_file_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("stdin review body\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-submit",
+            "--event",
+            "COMMENT",
+            "--body-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: submitted" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(
+        call
+        for call in graphql_calls
+        if (
+            "submitPullRequestReview" in _extract_form(call, "query")
+            or "addPullRequestReview" in _extract_form(call, "query")
+        )
+    )
+    assert _extract_field(review_call, "body") == "stdin review body\n"
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -847,6 +925,14 @@ def _extract_field_int(cmd: list[str], key: str) -> int:
     if raw is None:
         return 0
     return int(raw)
+
+
+class _FakeStdin:
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    def read(self) -> str:
+        return self._content
 
 
 def _forward_page_payload(page_size: int, after: str | None) -> dict[str, Any]:

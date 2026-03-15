@@ -173,6 +173,11 @@ gh-llm pr review-submit \
   --event COMMENT \
   --body 'Overall feedback...' \
   --pr 77938 --repo PaddlePaddle/Paddle
+
+gh-llm pr review-submit \
+  --event REQUEST_CHANGES \
+  --body-file review.md \
+  --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
 Submit behavior:
