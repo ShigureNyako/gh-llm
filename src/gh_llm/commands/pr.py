@@ -665,6 +665,13 @@ def cmd_pr_review_start(args: Any) -> int:
 def cmd_pr_review_comment(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_review_thread_target(
+        client=client,
+        args=args,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+    )
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
         ref=meta.ref,
         path=str(args.path),
@@ -682,6 +689,13 @@ def cmd_pr_review_comment(args: Any) -> int:
 def cmd_pr_review_suggest(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_review_thread_target(
+        client=client,
+        args=args,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+    )
     suggestion = str(args.suggestion).rstrip("\n")
     full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
@@ -845,11 +859,22 @@ def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
 
 
 class _DiffHunk:
-    def __init__(self, path: str, header: str, anchor_line: int, lines: list[str]) -> None:
+    def __init__(
+        self,
+        path: str,
+        header: str,
+        anchor_line: int,
+        lines: list[str],
+        *,
+        left_commentable_lines: set[int],
+        right_commentable_lines: set[int],
+    ) -> None:
         self.path = path
         self.header = header
         self.anchor_line = anchor_line
         self.lines = lines
+        self.left_commentable_lines = left_commentable_lines
+        self.right_commentable_lines = right_commentable_lines
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
@@ -860,23 +885,34 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     current_path = ""
     current_hunk_header = ""
     current_hunk_lines: list[str] = []
+    current_old_line = 0
     current_new_line = 0
     current_anchor = 0
+    current_fallback_anchor = 0
+    current_left_commentable_lines: set[int] = set()
+    current_right_commentable_lines: set[int] = set()
 
     def flush() -> None:
-        nonlocal current_hunk_header, current_hunk_lines, current_anchor
+        nonlocal current_hunk_header, current_hunk_lines, current_anchor, current_fallback_anchor
+        nonlocal current_left_commentable_lines, current_right_commentable_lines
         if current_path and current_hunk_header and current_hunk_lines:
+            anchor_line = current_anchor if current_anchor > 0 else current_fallback_anchor if current_fallback_anchor > 0 else 1
             hunks.append(
                 _DiffHunk(
                     path=current_path,
                     header=current_hunk_header,
-                    anchor_line=current_anchor if current_anchor > 0 else 1,
+                    anchor_line=anchor_line,
                     lines=current_hunk_lines.copy(),
+                    left_commentable_lines=current_left_commentable_lines.copy(),
+                    right_commentable_lines=current_right_commentable_lines.copy(),
                 )
             )
         current_hunk_header = ""
         current_hunk_lines = []
         current_anchor = 0
+        current_fallback_anchor = 0
+        current_left_commentable_lines = set()
+        current_right_commentable_lines = set()
 
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
@@ -896,11 +932,11 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
             current_hunk_lines = [raw]
             match = _HUNK_HEADER_RE.match(raw)
             if match is None:
+                current_old_line = 1
                 current_new_line = 1
-                current_anchor = 1
             else:
+                current_old_line = int(match.group("old"))
                 current_new_line = int(match.group("new"))
-                current_anchor = current_new_line
             continue
 
         if not current_hunk_header:
@@ -910,14 +946,51 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
         if raw.startswith("+"):
             if current_anchor <= 0:
                 current_anchor = current_new_line
+            if current_fallback_anchor <= 0:
+                current_fallback_anchor = current_new_line
+            current_right_commentable_lines.add(current_new_line)
             current_new_line += 1
         elif raw.startswith(" "):
+            if current_fallback_anchor <= 0:
+                current_fallback_anchor = current_new_line
+            current_left_commentable_lines.add(current_old_line)
+            current_right_commentable_lines.add(current_new_line)
+            current_old_line += 1
             current_new_line += 1
         elif raw.startswith("-"):
-            continue
+            current_left_commentable_lines.add(current_old_line)
+            current_old_line += 1
 
     flush()
     return hunks
+
+
+def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str, line: int, side: str) -> None:
+    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
+    hunks = _extract_diff_hunks(diff)
+    path_hunks = [hunk for hunk in hunks if hunk.path == path]
+    if not path_hunks:
+        raise RuntimeError(f"path is not part of the PR diff: {path}")
+
+    commentable_lines = sorted(
+        {
+            candidate
+            for hunk in path_hunks
+            for candidate in (
+                hunk.right_commentable_lines if side == "RIGHT" else hunk.left_commentable_lines
+            )
+        }
+    )
+    if line in commentable_lines:
+        return
+
+    preview = ", ".join(str(candidate) for candidate in commentable_lines[:8])
+    if len(commentable_lines) > 8:
+        preview += ", ..."
+    raise RuntimeError(
+        f"line {line} on {side} is not a commentable diff line for {path}. "
+        f"Try a line from the PR diff for that side instead (e.g. {preview})."
+    )
 
 
 def parse_event_indexes(raw_indexes: list[str]) -> list[int]:
