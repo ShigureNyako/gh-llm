@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -1014,6 +1015,35 @@ def test_pr_review_comment_null_thread_error_is_precise(
     err = capsys.readouterr().err
     assert "error: failed to create review thread: GitHub rejected the requested review location" in err
     assert "python/test_file.py:20 RIGHT" in err
+
+
+def test_cli_unexpected_error_shows_issue_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = argparse.ArgumentParser(prog="gh-llm")
+
+    def boom_handler(_: Any) -> int:
+        raise KeyError("boom")
+
+    parser.set_defaults(handler=boom_handler)
+
+    monkeypatch.setattr(cli, "_build_parser", lambda: parser)
+    monkeypatch.setattr(sys, "argv", ["gh-llm"])
+
+    code = cli.run([])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "unexpected error: 'boom'" in err
+    assert "This looks like an unexpected gh-llm failure." in err
+    assert "⌨ issue_title: '<short summary>'" in err
+    assert "⌨ issue_body: '<what happened, expected result, actual result>'" in err
+    assert (
+        "⏎ Create issue via gh: `gh issue create --repo ShigureLab/gh-llm --title '<short summary>' --body '<what happened, expected result, actual result>'`"
+        in err
+    )
+    assert "If useful, include the command that triggered it:" in err
+    assert "gh-llm" in err
 
 
 def test_graphql_eof_retries_with_backoff(
