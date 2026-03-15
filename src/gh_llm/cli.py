@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 
 from gh_llm import __version__
@@ -26,6 +27,27 @@ def run(argv: list[str]) -> int:
         return int(handler(args))
     except (RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:  # pragma: no cover - covered by explicit CLI test
+        print(f"unexpected error: {error}", file=sys.stderr)
+        print(file=sys.stderr)
+        print("This looks like an unexpected gh-llm failure.", file=sys.stderr)
+        print(
+            "Please file an issue via gh:",
+            file=sys.stderr,
+        )
+        print(
+            "gh issue create --repo ShigureLab/gh-llm --web",
+            file=sys.stderr,
+        )
+        print(
+            "If useful, include the command that triggered it:",
+            file=sys.stderr,
+        )
+        print(
+            shlex.join([detect_prog_name(sys.argv[0]), *argv]),
+            file=sys.stderr,
+        )
         return 1
 
 
