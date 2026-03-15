@@ -922,6 +922,61 @@ def test_pr_review_comment_accepts_deleted_file_left_side(
     assert "status: commented" in out
 
 
+def test_pr_review_comment_deleted_file_right_side_error_is_precise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_deleted_file_diff(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/deleted_file.py b/python/deleted_file.py",
+                        "deleted file mode 100644",
+                        "index 1111111..0000000",
+                        "--- a/python/deleted_file.py",
+                        "+++ /dev/null",
+                        "@@ -1,2 +0,0 @@",
+                        "-old_api_call()",
+                        "-legacy_cleanup()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/deleted_file.py",
+            "--line",
+            "1",
+            "--side",
+            "RIGHT",
+            "--body",
+            "this side should not be commentable",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: line 1 on RIGHT is not a commentable diff line for python/deleted_file.py." in err
+    assert "The current diff has no commentable lines on RIGHT for that file." in err
+
+
 def test_pr_review_comment_null_thread_error_is_precise(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

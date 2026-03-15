@@ -1000,6 +1000,12 @@ def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str
     if line in commentable_lines:
         return
 
+    if not commentable_lines:
+        raise RuntimeError(
+            f"line {line} on {side} is not a commentable diff line for {path}. "
+            f"The current diff has no commentable lines on {side} for that file."
+        )
+
     preview = ", ".join(str(candidate) for candidate in commentable_lines[:8])
     if len(commentable_lines) > 8:
         preview += ", ..."
