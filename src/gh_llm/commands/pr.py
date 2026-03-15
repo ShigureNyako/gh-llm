@@ -665,6 +665,13 @@ def cmd_pr_review_start(args: Any) -> int:
 def cmd_pr_review_comment(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_review_thread_target(
+        client=client,
+        args=args,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+    )
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
         ref=meta.ref,
         path=str(args.path),
@@ -682,6 +689,13 @@ def cmd_pr_review_comment(args: Any) -> int:
 def cmd_pr_review_suggest(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_review_thread_target(
+        client=client,
+        args=args,
+        path=str(args.path),
+        line=int(args.line),
+        side=str(args.side),
+    )
     suggestion = str(args.suggestion).rstrip("\n")
     full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
@@ -845,11 +859,24 @@ def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
 
 
 class _DiffHunk:
-    def __init__(self, path: str, header: str, anchor_line: int, lines: list[str]) -> None:
+    def __init__(
+        self,
+        path: str,
+        header: str,
+        anchor_line: int,
+        lines: list[str],
+        *,
+        left_commentable_lines: set[int],
+        right_commentable_lines: set[int],
+        match_paths: set[str],
+    ) -> None:
         self.path = path
         self.header = header
         self.anchor_line = anchor_line
         self.lines = lines
+        self.left_commentable_lines = left_commentable_lines
+        self.right_commentable_lines = right_commentable_lines
+        self.match_paths = match_paths
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
@@ -857,37 +884,64 @@ _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)
 
 def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     hunks: list[_DiffHunk] = []
-    current_path = ""
+    current_old_path = ""
+    current_new_path = ""
     current_hunk_header = ""
     current_hunk_lines: list[str] = []
+    current_old_line = 0
     current_new_line = 0
     current_anchor = 0
+    current_fallback_anchor = 0
+    current_left_commentable_lines: set[int] = set()
+    current_right_commentable_lines: set[int] = set()
+
+    def resolve_hunk_path() -> tuple[str, set[str]]:
+        match_paths = {path for path in (current_old_path, current_new_path) if path}
+        if current_new_path:
+            return current_new_path, match_paths
+        if current_old_path:
+            return current_old_path, match_paths
+        return "", match_paths
 
     def flush() -> None:
-        nonlocal current_hunk_header, current_hunk_lines, current_anchor
-        if current_path and current_hunk_header and current_hunk_lines:
+        nonlocal current_hunk_header, current_hunk_lines, current_anchor, current_fallback_anchor
+        nonlocal current_left_commentable_lines, current_right_commentable_lines
+        path, match_paths = resolve_hunk_path()
+        if path and current_hunk_header and current_hunk_lines:
+            anchor_line = (
+                current_anchor if current_anchor > 0 else current_fallback_anchor if current_fallback_anchor > 0 else 1
+            )
             hunks.append(
                 _DiffHunk(
-                    path=current_path,
+                    path=path,
                     header=current_hunk_header,
-                    anchor_line=current_anchor if current_anchor > 0 else 1,
+                    anchor_line=anchor_line,
                     lines=current_hunk_lines.copy(),
+                    left_commentable_lines=current_left_commentable_lines.copy(),
+                    right_commentable_lines=current_right_commentable_lines.copy(),
+                    match_paths=match_paths,
                 )
             )
         current_hunk_header = ""
         current_hunk_lines = []
         current_anchor = 0
+        current_fallback_anchor = 0
+        current_left_commentable_lines = set()
+        current_right_commentable_lines = set()
 
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
             flush()
+            current_old_path = ""
+            current_new_path = ""
             continue
-        if raw.startswith("--- a/"):
+        if raw.startswith("--- "):
             flush()
+            current_old_path = "" if raw == "--- /dev/null" else raw[len("--- a/") :]
             continue
-        if raw.startswith("+++ b/"):
+        if raw.startswith("+++ "):
             flush()
-            current_path = raw[len("+++ b/") :]
+            current_new_path = "" if raw == "+++ /dev/null" else raw[len("+++ b/") :]
             continue
 
         if raw.startswith("@@ "):
@@ -896,11 +950,11 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
             current_hunk_lines = [raw]
             match = _HUNK_HEADER_RE.match(raw)
             if match is None:
+                current_old_line = 1
                 current_new_line = 1
-                current_anchor = 1
             else:
+                current_old_line = int(match.group("old"))
                 current_new_line = int(match.group("new"))
-                current_anchor = current_new_line
             continue
 
         if not current_hunk_header:
@@ -910,14 +964,55 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
         if raw.startswith("+"):
             if current_anchor <= 0:
                 current_anchor = current_new_line
+            if current_fallback_anchor <= 0:
+                current_fallback_anchor = current_new_line
+            current_right_commentable_lines.add(current_new_line)
             current_new_line += 1
         elif raw.startswith(" "):
+            if current_fallback_anchor <= 0:
+                current_fallback_anchor = current_new_line
+            current_left_commentable_lines.add(current_old_line)
+            current_right_commentable_lines.add(current_new_line)
+            current_old_line += 1
             current_new_line += 1
         elif raw.startswith("-"):
-            continue
+            current_left_commentable_lines.add(current_old_line)
+            current_old_line += 1
 
     flush()
     return hunks
+
+
+def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str, line: int, side: str) -> None:
+    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
+    hunks = _extract_diff_hunks(diff)
+    path_hunks = [hunk for hunk in hunks if path in hunk.match_paths]
+    if not path_hunks:
+        raise RuntimeError(f"path is not part of the PR diff: {path}")
+
+    commentable_lines = sorted(
+        {
+            candidate
+            for hunk in path_hunks
+            for candidate in (hunk.right_commentable_lines if side == "RIGHT" else hunk.left_commentable_lines)
+        }
+    )
+    if line in commentable_lines:
+        return
+
+    if not commentable_lines:
+        raise RuntimeError(
+            f"line {line} on {side} is not a commentable diff line for {path}. "
+            f"The current diff has no commentable lines on {side} for that file."
+        )
+
+    preview = ", ".join(str(candidate) for candidate in commentable_lines[:8])
+    if len(commentable_lines) > 8:
+        preview += ", ..."
+    raise RuntimeError(
+        f"line {line} on {side} is not a commentable diff line for {path}. "
+        f"Try a line from the PR diff for that side instead (e.g. {preview})."
+    )
 
 
 def parse_event_indexes(raw_indexes: list[str]) -> list[int]:

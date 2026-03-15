@@ -1312,7 +1312,12 @@ mutation($id:ID!,$body:String!){
         )
         data_obj = _as_dict(payload.get("data"), context="graphql data")
         added_obj = _as_dict(data_obj.get("addPullRequestReviewThread"), context="addPullRequestReviewThread")
-        thread_obj = _as_dict(added_obj.get("thread"), context="thread")
+        thread_obj = _as_dict_optional(added_obj.get("thread"))
+        if thread_obj is None:
+            raise RuntimeError(
+                "failed to create review thread: GitHub rejected the requested review location "
+                f"({path}:{line} {side}). The line may be outside the current PR diff or otherwise not commentable."
+            )
         thread_id = _as_optional_str(thread_obj.get("id")) or ""
         comments_obj = _as_dict(thread_obj.get("comments"), context="thread comments")
         comment_nodes = _as_list(comments_obj.get("nodes"))
