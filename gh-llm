@@ -9,4 +9,4 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 export GH_LLM_DISPLAY_CMD="gh llm"
-exec uv run --project "${SCRIPT_DIR}" gh-llm "$@"
+exec uv run --no-group dev --project "${SCRIPT_DIR}" gh-llm "$@"
