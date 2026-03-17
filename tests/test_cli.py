@@ -6,6 +6,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
+from gh_llm.commands import pr as pr_commands
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -706,6 +707,30 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     out = capsys.readouterr().out
     assert "## Comment ic1" in out
     assert "- Type: IssueComment" in out
+
+
+def test_extract_diff_hunks_prefers_first_added_line_for_right_side() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/paddle/phi/kernels/funcs/abs.h b/paddle/phi/kernels/funcs/abs.h",
+            "index 1111111..2222222 100644",
+            "--- a/paddle/phi/kernels/funcs/abs.h",
+            "+++ b/paddle/phi/kernels/funcs/abs.h",
+            "@@ -22,6 +22,12 @@",
+            " #include \"paddle/phi/common/amp_type_traits.h\"",
+            " #include \"paddle/phi/core/dense_tensor.h\"",
+            "+#include \"paddle/phi/core/kernel_utils.h\"",
+            "+#include \"paddle/phi/core/tensor_utils.h\"",
+            " template <typename T, typename Context>",
+            "+inline void CheckInput(const DenseTensor& x) {}",
+        ]
+    )
+
+    hunks = pr_commands._extract_diff_hunks(diff)
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "paddle/phi/kernels/funcs/abs.h"
+    assert hunks[0].anchor_line == 24
 
 
 def test_pr_review_actions_for_llm_flow(

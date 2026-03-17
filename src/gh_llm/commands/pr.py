@@ -621,7 +621,7 @@ def cmd_pr_review_start(args: Any) -> int:
         print(f"### Hunk {idx}")
         print(f"File: {hunk.path}")
         print(f"Header: {hunk.header}")
-        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")
+        print(f"Suggested anchor line (RIGHT, first added line when available): {hunk.anchor_line}")
         comment_cmd = display_command_with(
             f"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
         )
@@ -841,21 +841,24 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     current_hunk_lines: list[str] = []
     current_new_line = 0
     current_anchor = 0
+    current_hunk_start_line = 0
 
     def flush() -> None:
-        nonlocal current_hunk_header, current_hunk_lines, current_anchor
+        nonlocal current_hunk_header, current_hunk_lines, current_anchor, current_hunk_start_line
         if current_path and current_hunk_header and current_hunk_lines:
+            fallback_line = current_hunk_start_line if current_hunk_start_line > 0 else 1
             hunks.append(
                 _DiffHunk(
                     path=current_path,
                     header=current_hunk_header,
-                    anchor_line=current_anchor if current_anchor > 0 else 1,
+                    anchor_line=current_anchor if current_anchor > 0 else fallback_line,
                     lines=current_hunk_lines.copy(),
                 )
             )
         current_hunk_header = ""
         current_hunk_lines = []
         current_anchor = 0
+        current_hunk_start_line = 0
 
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
@@ -876,10 +879,10 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
             match = _HUNK_HEADER_RE.match(raw)
             if match is None:
                 current_new_line = 1
-                current_anchor = 1
+                current_hunk_start_line = 1
             else:
                 current_new_line = int(match.group("new"))
-                current_anchor = current_new_line
+                current_hunk_start_line = current_new_line
             continue
 
         if not current_hunk_header:
