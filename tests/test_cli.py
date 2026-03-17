@@ -939,7 +939,7 @@ def test_pr_review_comment_invalid_location_error_is_precise(
             "--path",
             "python/test_file.py",
             "--line",
-            "20",
+            "100",
             "--side",
             "RIGHT",
             "--body",
@@ -952,8 +952,8 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "error: line 20 on RIGHT is not a commentable diff line for python/test_file.py." in err
-    assert "Try a line from the PR diff for that side instead (e.g. 21)." in err
+    assert "error: line 100 on RIGHT is not a commentable diff line for python/test_file.py." in err
+    assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
 
 
 def test_pr_review_comment_accepts_deleted_file_left_side(
