@@ -744,10 +744,10 @@ def test_extract_diff_hunks_uses_real_new_file_line_numbers_on_right_side() -> N
             "@@ -642,7 +642,7 @@ def cmd_pr_review_start(args: Any) -> int:",
             '-        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")',
             '+        print(f"Suggested anchor line (RIGHT, first added line when available): {hunk.anchor_line}")',
-            '         comment_cmd = display_command_with(',
+            "         comment_cmd = display_command_with(",
             "             f\"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}\"",
             "         )",
-            '         suggest_cmd = display_command_with(',
+            "         suggest_cmd = display_command_with(",
             "             f\"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}\"",
             "         )",
         ]
