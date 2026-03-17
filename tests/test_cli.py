@@ -734,6 +734,33 @@ def test_extract_diff_hunks_prefers_first_added_line_for_right_side() -> None:
     assert hunks[0].anchor_line == 24
 
 
+def test_extract_diff_hunks_offsets_right_side_after_leading_deletion() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/src/gh_llm/commands/pr.py b/src/gh_llm/commands/pr.py",
+            "index 1111111..2222222 100644",
+            "--- a/src/gh_llm/commands/pr.py",
+            "+++ b/src/gh_llm/commands/pr.py",
+            "@@ -642,7 +642,7 @@ def cmd_pr_review_start(args: Any) -> int:",
+            '-        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")',
+            '+        print(f"Suggested anchor line (RIGHT, first added line when available): {hunk.anchor_line}")',
+            '         comment_cmd = display_command_with(',
+            "             f\"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}\"",
+            "         )",
+            '         suggest_cmd = display_command_with(',
+            "             f\"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}\"",
+            "         )",
+        ]
+    )
+
+    hunks = pr_commands._extract_diff_hunks(diff)  # pyright: ignore[reportPrivateUsage]
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "src/gh_llm/commands/pr.py"
+    assert hunks[0].anchor_line == 643
+    assert 643 in hunks[0].right_commentable_lines
+
+
 def test_pr_review_actions_for_llm_flow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -749,8 +776,8 @@ def test_pr_review_actions_for_llm_flow(
     assert "## Review Start" in out
     assert "Total hunks: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 20 --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 20 --side RIGHT" in out
+    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 21 --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 21 --side RIGHT" in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
 
     code = cli.run(
@@ -760,7 +787,7 @@ def test_pr_review_actions_for_llm_flow(
             "--path",
             "python/test_file.py",
             "--line",
-            "20",
+            "21",
             "--side",
             "RIGHT",
             "--body",
@@ -784,7 +811,7 @@ def test_pr_review_actions_for_llm_flow(
             "--path",
             "python/test_file.py",
             "--line",
-            "20",
+            "21",
             "--side",
             "RIGHT",
             "--body",
@@ -876,7 +903,7 @@ def test_pr_review_comment_invalid_location_error_is_precise(
             "--path",
             "python/test_file.py",
             "--line",
-            "21",
+            "20",
             "--side",
             "RIGHT",
             "--body",
@@ -889,8 +916,8 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "error: line 21 on RIGHT is not a commentable diff line for python/test_file.py." in err
-    assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
+    assert "error: line 20 on RIGHT is not a commentable diff line for python/test_file.py." in err
+    assert "Try a line from the PR diff for that side instead (e.g. 21)." in err
 
 
 def test_pr_review_comment_accepts_deleted_file_left_side(
@@ -1025,7 +1052,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
             "--path",
             "python/test_file.py",
             "--line",
-            "20",
+            "21",
             "--side",
             "RIGHT",
             "--body",
@@ -1039,7 +1066,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
     assert code == 1
     err = capsys.readouterr().err
     assert "error: failed to create review thread: GitHub rejected the requested review location" in err
-    assert "python/test_file.py:20 RIGHT" in err
+    assert "python/test_file.py:21 RIGHT" in err
 
 
 def test_cli_unexpected_error_shows_issue_guidance(
