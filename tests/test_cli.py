@@ -734,7 +734,7 @@ def test_extract_diff_hunks_prefers_first_added_line_for_right_side() -> None:
     assert hunks[0].anchor_line == 24
 
 
-def test_extract_diff_hunks_offsets_right_side_after_leading_deletion() -> None:
+def test_extract_diff_hunks_uses_real_new_file_line_numbers_on_right_side() -> None:
     diff = "\n".join(
         [
             "diff --git a/src/gh_llm/commands/pr.py b/src/gh_llm/commands/pr.py",
@@ -757,8 +757,37 @@ def test_extract_diff_hunks_offsets_right_side_after_leading_deletion() -> None:
 
     assert len(hunks) == 1
     assert hunks[0].path == "src/gh_llm/commands/pr.py"
-    assert hunks[0].anchor_line == 643
-    assert 643 in hunks[0].right_commentable_lines
+    assert hunks[0].anchor_line == 642
+    assert 642 in hunks[0].right_commentable_lines
+    assert min(hunks[0].right_commentable_lines) == 642
+
+
+def test_render_numbered_hunk_lines_preserves_real_right_side_line_numbers() -> None:
+    hunk = pr_commands._DiffHunk(  # pyright: ignore[reportPrivateUsage]
+        path="src/gh_llm/commands/pr.py",
+        header="@@ -890,6 +890,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:",
+        anchor_line=893,
+        lines=[
+            "@@ -890,6 +890,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:",
+            "     current_hunk_lines: list[str] = []",
+            "     current_old_line = 0",
+            "     current_new_line = 0",
+            "+    current_right_display_line = 0",
+            "     current_anchor = 0",
+            "     current_fallback_anchor = 0",
+            "     current_left_commentable_lines: set[int] = set()",
+        ],
+        left_commentable_lines={890, 891, 892, 893, 894, 895},
+        right_commentable_lines={890, 891, 892, 893, 894, 895, 896},
+        match_paths={"src/gh_llm/commands/pr.py"},
+    )
+
+    rendered = pr_commands._render_numbered_hunk_lines(hunk)  # pyright: ignore[reportPrivateUsage]
+
+    assert "R 890 |      current_hunk_lines: list[str] = []" in rendered
+    assert "R 891 |      current_old_line = 0" in rendered
+    assert "R 892 |      current_new_line = 0" in rendered
+    assert "R 893 | +    current_right_display_line = 0" in rendered
 
 
 def test_pr_review_actions_for_llm_flow(
@@ -778,11 +807,11 @@ def test_pr_review_actions_for_llm_flow(
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
     assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
     assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
-    assert "RIGHT commentable lines: 21" in out
+    assert "RIGHT commentable lines: 20" in out
     assert "Use a RIGHT line number from the numbered diff below" in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
     assert "L  20 | -old_api_call()" in out
-    assert "R  21 | +new_api_call()" in out
+    assert "R  20 | +new_api_call()" in out
     assert "Suggested anchor line" not in out
 
     code = cli.run(
@@ -792,7 +821,7 @@ def test_pr_review_actions_for_llm_flow(
             "--path",
             "python/test_file.py",
             "--line",
-            "21",
+            "20",
             "--side",
             "RIGHT",
             "--body",
@@ -816,7 +845,7 @@ def test_pr_review_actions_for_llm_flow(
             "--path",
             "python/test_file.py",
             "--line",
-            "21",
+            "20",
             "--side",
             "RIGHT",
             "--body",
@@ -1059,7 +1088,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
             "--path",
             "python/test_file.py",
             "--line",
-            "21",
+            "20",
             "--side",
             "RIGHT",
             "--body",
@@ -1073,7 +1102,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
     assert code == 1
     err = capsys.readouterr().err
     assert "error: failed to create review thread: GitHub rejected the requested review location" in err
-    assert "python/test_file.py:21 RIGHT" in err
+    assert "python/test_file.py:20 RIGHT" in err
 
 
 def test_cli_unexpected_error_shows_issue_guidance(

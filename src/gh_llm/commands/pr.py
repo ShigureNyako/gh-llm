@@ -881,23 +881,19 @@ def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
     match = _HUNK_HEADER_RE.match(hunk.header)
     old_line = int(match.group("old")) if match is not None else 1
     new_line = int(match.group("new")) if match is not None else 1
-    right_display_line = new_line
 
     for raw in hunk.lines[1:]:
         marker = raw[:1]
         if marker == "+":
-            rendered.append(f"R{right_display_line:>4} | {raw}")
+            rendered.append(f"R{new_line:>4} | {raw}")
             new_line += 1
-            right_display_line += 1
         elif marker == " ":
-            rendered.append(f"R{right_display_line:>4} | {raw}")
+            rendered.append(f"R{new_line:>4} | {raw}")
             old_line += 1
             new_line += 1
-            right_display_line += 1
         elif marker == "-":
             rendered.append(f"L{old_line:>4} | {raw}")
             old_line += 1
-            right_display_line += 1
         else:
             rendered.append(f"      | {raw}")
     return rendered
@@ -911,7 +907,6 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     current_hunk_lines: list[str] = []
     current_old_line = 0
     current_new_line = 0
-    current_right_display_line = 0
     current_anchor = 0
     current_fallback_anchor = 0
     current_left_commentable_lines: set[int] = set()
@@ -927,7 +922,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
 
     def flush() -> None:
         nonlocal current_hunk_header, current_hunk_lines, current_anchor, current_fallback_anchor
-        nonlocal current_left_commentable_lines, current_right_commentable_lines, current_right_display_line
+        nonlocal current_left_commentable_lines, current_right_commentable_lines
         path, match_paths = resolve_hunk_path()
         if path and current_hunk_header and current_hunk_lines:
             anchor_line = (
@@ -950,7 +945,6 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
         current_fallback_anchor = 0
         current_left_commentable_lines = set()
         current_right_commentable_lines = set()
-        current_right_display_line = 0
 
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
@@ -978,7 +972,6 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
             else:
                 current_old_line = int(match.group("old"))
                 current_new_line = int(match.group("new"))
-            current_right_display_line = current_new_line
             continue
 
         if not current_hunk_header:
@@ -987,24 +980,21 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
         current_hunk_lines.append(raw)
         if raw.startswith("+"):
             if current_anchor <= 0:
-                current_anchor = current_right_display_line
+                current_anchor = current_new_line
             if current_fallback_anchor <= 0:
-                current_fallback_anchor = current_right_display_line
-            current_right_commentable_lines.add(current_right_display_line)
+                current_fallback_anchor = current_new_line
+            current_right_commentable_lines.add(current_new_line)
             current_new_line += 1
-            current_right_display_line += 1
         elif raw.startswith(" "):
             if current_fallback_anchor <= 0:
-                current_fallback_anchor = current_right_display_line
+                current_fallback_anchor = current_new_line
             current_left_commentable_lines.add(current_old_line)
-            current_right_commentable_lines.add(current_right_display_line)
+            current_right_commentable_lines.add(current_new_line)
             current_old_line += 1
             current_new_line += 1
-            current_right_display_line += 1
         elif raw.startswith("-"):
             current_left_commentable_lines.add(current_old_line)
             current_old_line += 1
-            current_right_display_line += 1
 
     flush()
     return hunks
