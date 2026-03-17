@@ -141,7 +141,7 @@ gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr review-start --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
-It prints per-hunk anchor lines and ready-to-run comment/suggestion commands.
+It prints per-hunk commentable LEFT/RIGHT line ranges, numbered diff lines, and ready-to-run comment/suggestion commands.
 
 ### 2) Add inline comment
 

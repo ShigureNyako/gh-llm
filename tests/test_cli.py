@@ -7,6 +7,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
+from gh_llm.commands import pr as pr_commands
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -130,7 +131,7 @@ class GhResponder:
                 json.dumps({"data": {"addPullRequestReviewThreadReply": {"comment": {"id": "PRRC_reply_1"}}}})
             )
 
-        if "addPullRequestReviewThread(input:" in query:
+        if "addPullRequestReviewThread" in query:
             self.pending_review_id = "PRR_pending_1"
             return FakeCompletedProcess(
                 json.dumps(
@@ -709,6 +710,86 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "- Type: IssueComment" in out
 
 
+def test_extract_diff_hunks_prefers_first_added_line_for_right_side() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/paddle/phi/kernels/funcs/abs.h b/paddle/phi/kernels/funcs/abs.h",
+            "index 1111111..2222222 100644",
+            "--- a/paddle/phi/kernels/funcs/abs.h",
+            "+++ b/paddle/phi/kernels/funcs/abs.h",
+            "@@ -22,6 +22,12 @@",
+            ' #include "paddle/phi/common/amp_type_traits.h"',
+            ' #include "paddle/phi/core/dense_tensor.h"',
+            '+#include "paddle/phi/core/kernel_utils.h"',
+            '+#include "paddle/phi/core/tensor_utils.h"',
+            " template <typename T, typename Context>",
+            "+inline void CheckInput(const DenseTensor& x) {}",
+        ]
+    )
+
+    hunks = pr_commands._extract_diff_hunks(diff)  # pyright: ignore[reportPrivateUsage]
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "paddle/phi/kernels/funcs/abs.h"
+    assert hunks[0].anchor_line == 24
+
+
+def test_extract_diff_hunks_uses_real_new_file_line_numbers_on_right_side() -> None:
+    diff = "\n".join(
+        [
+            "diff --git a/src/gh_llm/commands/pr.py b/src/gh_llm/commands/pr.py",
+            "index 1111111..2222222 100644",
+            "--- a/src/gh_llm/commands/pr.py",
+            "+++ b/src/gh_llm/commands/pr.py",
+            "@@ -642,7 +642,7 @@ def cmd_pr_review_start(args: Any) -> int:",
+            '-        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")',
+            '+        print(f"Suggested anchor line (RIGHT, first added line when available): {hunk.anchor_line}")',
+            "         comment_cmd = display_command_with(",
+            "             f\"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}\"",
+            "         )",
+            "         suggest_cmd = display_command_with(",
+            "             f\"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}\"",
+            "         )",
+        ]
+    )
+
+    hunks = pr_commands._extract_diff_hunks(diff)  # pyright: ignore[reportPrivateUsage]
+
+    assert len(hunks) == 1
+    assert hunks[0].path == "src/gh_llm/commands/pr.py"
+    assert hunks[0].anchor_line == 642
+    assert 642 in hunks[0].right_commentable_lines
+    assert min(hunks[0].right_commentable_lines) == 642
+
+
+def test_render_numbered_hunk_lines_preserves_real_right_side_line_numbers() -> None:
+    hunk = pr_commands._DiffHunk(  # pyright: ignore[reportPrivateUsage]
+        path="src/gh_llm/commands/pr.py",
+        header="@@ -890,6 +890,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:",
+        anchor_line=893,
+        lines=[
+            "@@ -890,6 +890,7 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:",
+            "     current_hunk_lines: list[str] = []",
+            "     current_old_line = 0",
+            "     current_new_line = 0",
+            "+    current_right_display_line = 0",
+            "     current_anchor = 0",
+            "     current_fallback_anchor = 0",
+            "     current_left_commentable_lines: set[int] = set()",
+        ],
+        left_commentable_lines={890, 891, 892, 893, 894, 895},
+        right_commentable_lines={890, 891, 892, 893, 894, 895, 896},
+        match_paths={"src/gh_llm/commands/pr.py"},
+    )
+
+    rendered = pr_commands._render_numbered_hunk_lines(hunk)  # pyright: ignore[reportPrivateUsage]
+
+    assert "L 890 R 890 |      current_hunk_lines: list[str] = []" in rendered
+    assert "L 891 R 891 |      current_old_line = 0" in rendered
+    assert "L 892 R 892 |      current_new_line = 0" in rendered
+    assert "L     R 893 | +    current_right_display_line = 0" in rendered
+
+
 def test_pr_review_actions_for_llm_flow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -724,9 +805,17 @@ def test_pr_review_actions_for_llm_flow(
     assert "## Review Start" in out
     assert "Total hunks: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 20 --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 20 --side RIGHT" in out
+    assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT" in out
+    assert "LEFT commentable span(s): 20" in out
+    assert "RIGHT commentable span(s): 20" in out
+    assert "Use the L#### / R#### labels from the numbered diff below as --line values." in out
+    assert "For a continuous multi-line range on the same side, add --start-line <start_line>." in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
+    assert "L  20 R     | -old_api_call()" in out
+    assert "L     R  20 | +new_api_call()" in out
+    assert "Suggested anchor line" not in out
 
     code = cli.run(
         [
@@ -797,7 +886,7 @@ def test_pr_review_actions_for_llm_flow(
     assert "status: submitted" in out
 
 
-def test_pr_review_start_prefers_first_added_line(
+def test_pr_review_start_shows_numbered_right_side_lines(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -831,8 +920,11 @@ def test_pr_review_start_prefers_first_added_line(
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 21 --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 21 --side RIGHT" in out
+    assert "LEFT commentable span(s): 20-21" in out
+    assert "RIGHT commentable span(s): 20-22" in out
+    assert "L  20 R  20 |  context_before()" in out
+    assert "L     R  21 | +new_api_call()" in out
+    assert "L  21 R  22 |  context_after()" in out
 
 
 def test_pr_review_comment_invalid_location_error_is_precise(
@@ -866,6 +958,68 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     err = capsys.readouterr().err
     assert "error: line 21 on RIGHT is not a commentable diff line for python/test_file.py." in err
     assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
+
+
+def test_pr_review_comment_supports_multiline_right_side_range(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_leading_context(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/test_file.py b/python/test_file.py",
+                        "index 1111111..2222222 100644",
+                        "--- a/python/test_file.py",
+                        "+++ b/python/test_file.py",
+                        "@@ -20,3 +20,4 @@ def demo():",
+                        " context_before()",
+                        "+new_api_call()",
+                        " context_after()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_leading_context)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--start-line",
+            "21",
+            "--line",
+            "22",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please review this range",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "thread: PRRT_new_1" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert _extract_field(review_call, "startLine") == "21"
+    assert _extract_field(review_call, "startSide") == "RIGHT"
+    assert _extract_field(review_call, "line") == "22"
+    assert _extract_field(review_call, "side") == "RIGHT"
 
 
 def test_pr_review_comment_accepts_deleted_file_left_side(
@@ -986,7 +1140,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
     responder = GhResponder()
 
     def run_with_null_thread(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
-        if cmd[:3] == ["gh", "api", "graphql"] and "addPullRequestReviewThread(input:" in _extract_form(cmd, "query"):
+        if cmd[:3] == ["gh", "api", "graphql"] and "addPullRequestReviewThread" in _extract_form(cmd, "query"):
             return FakeCompletedProcess(json.dumps({"data": {"addPullRequestReviewThread": {"thread": None}}}))
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 

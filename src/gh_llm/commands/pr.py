@@ -204,11 +204,19 @@ def register_pr_parser(subparsers: Any) -> None:
     review_start_parser.set_defaults(handler=cmd_pr_review_start)
 
     review_comment_parser = pr_subparsers.add_parser(
-        "review-comment", help="add one inline review comment at a specific line"
+        "review-comment", help="add one inline review comment at a specific line or line range"
     )
     review_comment_parser.add_argument("--path", required=True, help="file path in pull request")
-    review_comment_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
+    review_comment_parser.add_argument("--line", required=True, type=int, help="ending line number on selected side")
+    review_comment_parser.add_argument(
+        "--start-line", type=int, help="starting line number for a continuous multi-line range"
+    )
     review_comment_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
+    review_comment_parser.add_argument(
+        "--start-side",
+        choices=["RIGHT", "LEFT"],
+        help="starting diff side for a multi-line range (defaults to --side)",
+    )
     review_comment_parser.add_argument("--body", required=True, help="review comment body")
     review_comment_parser.add_argument("--pr", help="PR number/url/branch")
     review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -630,8 +638,12 @@ def cmd_pr_review_start(args: Any) -> int:
     suggestion_template_cmd = display_command_with(
         f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
     )
+    range_template_cmd = display_command_with(
+        f"pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
+    )
     print(f"Comment template: `{comment_template_cmd}`")
     print(f"Suggestion template: `{suggestion_template_cmd}`")
+    print(f"Multi-line template: `{range_template_cmd}`")
     print()
 
     if not visible:
@@ -642,17 +654,14 @@ def cmd_pr_review_start(args: Any) -> int:
         print(f"### Hunk {idx}")
         print(f"File: {hunk.path}")
         print(f"Header: {hunk.header}")
-        print(f"Suggested anchor line (RIGHT): {hunk.anchor_line}")
-        comment_cmd = display_command_with(
-            f"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
-        )
-        suggest_cmd = display_command_with(
-            f"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
-        )
-        print(f"⏎ comment: `{comment_cmd}`")
-        print(f"⏎ suggest: `{suggest_cmd}`")
-        print("```diff")
-        for line in hunk.lines:
+        left_span_preview = _format_line_spans(sorted(hunk.left_commentable_lines))
+        right_span_preview = _format_line_spans(sorted(hunk.right_commentable_lines))
+        print(f"LEFT commentable span(s): {left_span_preview}")
+        print(f"RIGHT commentable span(s): {right_span_preview}")
+        print("Use the L#### / R#### labels from the numbered diff below as --line values.")
+        print("For a continuous multi-line range on the same side, add --start-line <start_line>.")
+        print("```text")
+        for line in _render_numbered_hunk_lines(hunk):
             print(line)
         print("```")
         print()
@@ -665,18 +674,24 @@ def cmd_pr_review_start(args: Any) -> int:
 def cmd_pr_review_comment(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    start_line = _resolve_start_line(args)
+    start_side = _resolve_start_side(args)
     _validate_review_thread_target(
         client=client,
         args=args,
         path=str(args.path),
         line=int(args.line),
         side=str(args.side),
+        start_line=start_line,
+        start_side=start_side,
     )
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
         ref=meta.ref,
         path=str(args.path),
         line=int(args.line),
         side=str(args.side),
+        start_line=start_line,
+        start_side=start_side,
         body=str(args.body),
     )
     print(f"thread: {thread_id}")
@@ -689,12 +704,16 @@ def cmd_pr_review_comment(args: Any) -> int:
 def cmd_pr_review_suggest(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    start_line = _resolve_start_line(args)
+    start_side = _resolve_start_side(args)
     _validate_review_thread_target(
         client=client,
         args=args,
         path=str(args.path),
         line=int(args.line),
         side=str(args.side),
+        start_line=start_line,
+        start_side=start_side,
     )
     suggestion = str(args.suggestion).rstrip("\n")
     full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
@@ -703,6 +722,8 @@ def cmd_pr_review_suggest(args: Any) -> int:
         path=str(args.path),
         line=int(args.line),
         side=str(args.side),
+        start_line=start_line,
+        start_side=start_side,
         body=full_body,
     )
     print(f"thread: {thread_id}")
@@ -882,6 +903,34 @@ class _DiffHunk:
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 
 
+def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
+    rendered = [hunk.header]
+    match = _HUNK_HEADER_RE.match(hunk.header)
+    old_line = int(match.group("old")) if match is not None else 1
+    new_line = int(match.group("new")) if match is not None else 1
+
+    def format_line(left: int | None, right: int | None, raw: str) -> str:
+        left_label = f"L{left:>4}" if left is not None else "L    "
+        right_label = f"R{right:>4}" if right is not None else "R    "
+        return f"{left_label} {right_label} | {raw}"
+
+    for raw in hunk.lines[1:]:
+        marker = raw[:1]
+        if marker == "+":
+            rendered.append(format_line(None, new_line, raw))
+            new_line += 1
+        elif marker == " ":
+            rendered.append(format_line(old_line, new_line, raw))
+            old_line += 1
+            new_line += 1
+        elif marker == "-":
+            rendered.append(format_line(old_line, None, raw))
+            old_line += 1
+        else:
+            rendered.append(f"            | {raw}")
+    return rendered
+
+
 def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     hunks: list[_DiffHunk] = []
     current_old_path = ""
@@ -983,20 +1032,52 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
     return hunks
 
 
-def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str, line: int, side: str) -> None:
-    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
-    hunks = _extract_diff_hunks(diff)
-    path_hunks = [hunk for hunk in hunks if path in hunk.match_paths]
-    if not path_hunks:
-        raise RuntimeError(f"path is not part of the PR diff: {path}")
+def _resolve_start_line(args: Any) -> int | None:
+    raw = getattr(args, "start_line", None)
+    if raw is None:
+        return None
+    return int(raw)
 
-    commentable_lines = sorted(
+
+def _resolve_start_side(args: Any) -> str | None:
+    start_line = _resolve_start_line(args)
+    if start_line is None:
+        return None
+    raw = getattr(args, "start_side", None)
+    if raw is None:
+        return str(getattr(args, "side", "RIGHT"))
+    return str(raw)
+
+
+def _format_line_spans(lines: list[int]) -> str:
+    if not lines:
+        return "(none)"
+
+    spans: list[str] = []
+    start = lines[0]
+    end = lines[0]
+    for value in lines[1:]:
+        if value == end + 1:
+            end = value
+            continue
+        spans.append(str(start) if start == end else f"{start}-{end}")
+        start = value
+        end = value
+    spans.append(str(start) if start == end else f"{start}-{end}")
+    return ", ".join(spans)
+
+
+def _collect_commentable_lines(path_hunks: list[_DiffHunk], *, side: str) -> list[int]:
+    return sorted(
         {
             candidate
             for hunk in path_hunks
             for candidate in (hunk.right_commentable_lines if side == "RIGHT" else hunk.left_commentable_lines)
         }
     )
+
+
+def _validate_one_review_thread_target(*, path: str, line: int, side: str, commentable_lines: list[int]) -> None:
     if line in commentable_lines:
         return
 
@@ -1012,6 +1093,38 @@ def _validate_review_thread_target(*, client: GitHubClient, args: Any, path: str
     raise RuntimeError(
         f"line {line} on {side} is not a commentable diff line for {path}. "
         f"Try a line from the PR diff for that side instead (e.g. {preview})."
+    )
+
+
+def _validate_review_thread_target(
+    *,
+    client: GitHubClient,
+    args: Any,
+    path: str,
+    line: int,
+    side: str,
+    start_line: int | None = None,
+    start_side: str | None = None,
+) -> None:
+    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
+    hunks = _extract_diff_hunks(diff)
+    path_hunks = [hunk for hunk in hunks if path in hunk.match_paths]
+    if not path_hunks:
+        raise RuntimeError(f"path is not part of the PR diff: {path}")
+
+    commentable_lines = _collect_commentable_lines(path_hunks, side=side)
+    _validate_one_review_thread_target(path=path, line=line, side=side, commentable_lines=commentable_lines)
+
+    if start_line is None:
+        return
+
+    resolved_start_side = side if start_side is None else start_side
+    start_commentable_lines = _collect_commentable_lines(path_hunks, side=resolved_start_side)
+    _validate_one_review_thread_target(
+        path=path,
+        line=start_line,
+        side=resolved_start_side,
+        commentable_lines=start_commentable_lines,
     )
 
 
