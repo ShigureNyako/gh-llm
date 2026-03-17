@@ -1022,7 +1022,6 @@ def test_pr_review_comment_supports_multiline_right_side_range(
     assert _extract_field(review_call, "side") == "RIGHT"
 
 
-
 def test_pr_review_comment_accepts_deleted_file_left_side(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

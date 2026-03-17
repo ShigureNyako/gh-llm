@@ -208,7 +208,9 @@ def register_pr_parser(subparsers: Any) -> None:
     )
     review_comment_parser.add_argument("--path", required=True, help="file path in pull request")
     review_comment_parser.add_argument("--line", required=True, type=int, help="ending line number on selected side")
-    review_comment_parser.add_argument("--start-line", type=int, help="starting line number for a continuous multi-line range")
+    review_comment_parser.add_argument(
+        "--start-line", type=int, help="starting line number for a continuous multi-line range"
+    )
     review_comment_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
     review_comment_parser.add_argument(
         "--start-side",
