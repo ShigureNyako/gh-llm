@@ -55,8 +55,8 @@ def test_extension_entrypoint_forwards_to_uv_from_repo(tmp_path: Path) -> None:
     assert completed.stderr.strip() == ""
     assert fake_stdout.read_text(encoding="utf-8").strip() == "uv-called"
     forwarded = captured.read_text(encoding="utf-8").strip()
-    assert forwarded.startswith("run --project ")
     assert " gh-llm --help" in forwarded
+    assert "--no-group dev" in forwarded
     assert str(repo_root) in forwarded
 
 
