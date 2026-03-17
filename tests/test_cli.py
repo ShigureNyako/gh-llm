@@ -776,9 +776,14 @@ def test_pr_review_actions_for_llm_flow(
     assert "## Review Start" in out
     assert "Total hunks: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 21 --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 21 --side RIGHT" in out
+    assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
+    assert "RIGHT commentable lines: 21" in out
+    assert "Use a RIGHT line number from the numbered diff below" in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
+    assert "L  20 | -old_api_call()" in out
+    assert "R  21 | +new_api_call()" in out
+    assert "Suggested anchor line" not in out
 
     code = cli.run(
         [
@@ -849,7 +854,7 @@ def test_pr_review_actions_for_llm_flow(
     assert "status: submitted" in out
 
 
-def test_pr_review_start_prefers_first_added_line(
+def test_pr_review_start_shows_numbered_right_side_lines(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -883,8 +888,10 @@ def test_pr_review_start_prefers_first_added_line(
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 21 --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 21 --side RIGHT" in out
+    assert "RIGHT commentable lines: 20, 21, 22" in out
+    assert "R  20 |  context_before()" in out
+    assert "R  21 | +new_api_call()" in out
+    assert "R  22 |  context_after()" in out
 
 
 def test_pr_review_comment_invalid_location_error_is_precise(

@@ -642,17 +642,11 @@ def cmd_pr_review_start(args: Any) -> int:
         print(f"### Hunk {idx}")
         print(f"File: {hunk.path}")
         print(f"Header: {hunk.header}")
-        print(f"Suggested anchor line (RIGHT, first added line when available): {hunk.anchor_line}")
-        comment_cmd = display_command_with(
-            f"pr review-comment --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
-        )
-        suggest_cmd = display_command_with(
-            f"pr review-suggest --path '{hunk.path}' --line {hunk.anchor_line} --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
-        )
-        print(f"⏎ comment: `{comment_cmd}`")
-        print(f"⏎ suggest: `{suggest_cmd}`")
-        print("```diff")
-        for line in hunk.lines:
+        available_right_lines = ", ".join(str(line) for line in sorted(hunk.right_commentable_lines)) or "(none)"
+        print(f"RIGHT commentable lines: {available_right_lines}")
+        print("Use a RIGHT line number from the numbered diff below with the command templates above.")
+        print("```text")
+        for line in _render_numbered_hunk_lines(hunk):
             print(line)
         print("```")
         print()
@@ -880,6 +874,33 @@ class _DiffHunk:
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
+
+
+def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
+    rendered = [hunk.header]
+    match = _HUNK_HEADER_RE.match(hunk.header)
+    old_line = int(match.group("old")) if match is not None else 1
+    new_line = int(match.group("new")) if match is not None else 1
+    right_display_line = new_line
+
+    for raw in hunk.lines[1:]:
+        marker = raw[:1]
+        if marker == "+":
+            rendered.append(f"R{right_display_line:>4} | {raw}")
+            new_line += 1
+            right_display_line += 1
+        elif marker == " ":
+            rendered.append(f"R{right_display_line:>4} | {raw}")
+            old_line += 1
+            new_line += 1
+            right_display_line += 1
+        elif marker == "-":
+            rendered.append(f"L{old_line:>4} | {raw}")
+            old_line += 1
+            right_display_line += 1
+        else:
+            rendered.append(f"      | {raw}")
+    return rendered
 
 
 def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
