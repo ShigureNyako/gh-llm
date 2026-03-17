@@ -131,7 +131,7 @@ class GhResponder:
                 json.dumps({"data": {"addPullRequestReviewThreadReply": {"comment": {"id": "PRRC_reply_1"}}}})
             )
 
-        if "addPullRequestReviewThread(input:" in query:
+        if "addPullRequestReviewThread" in query:
             self.pending_review_id = "PRR_pending_1"
             return FakeCompletedProcess(
                 json.dumps(
@@ -805,11 +805,13 @@ def test_pr_review_actions_for_llm_flow(
     assert "## Review Start" in out
     assert "Total hunks: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path '<path>' --line [LINE] --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path '<path>' --line [LINE] --side RIGHT" in out
-    assert "LEFT commentable lines: 20" in out
-    assert "RIGHT commentable lines: 20" in out
-    assert "Use a LEFT or RIGHT line number from the numbered diff below" in out
+    assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT" in out
+    assert "LEFT commentable span(s): 20" in out
+    assert "RIGHT commentable span(s): 20" in out
+    assert "Use the L#### / R#### labels from the numbered diff below as --line values." in out
+    assert "For a continuous multi-line range on the same side, add --start-line <start_line>." in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
     assert "L  20 R     | -old_api_call()" in out
     assert "L     R  20 | +new_api_call()" in out
@@ -918,8 +920,8 @@ def test_pr_review_start_shows_numbered_right_side_lines(
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "LEFT commentable lines: 20, 21" in out
-    assert "RIGHT commentable lines: 20, 21, 22" in out
+    assert "LEFT commentable span(s): 20-21" in out
+    assert "RIGHT commentable span(s): 20-22" in out
     assert "L  20 R  20 |  context_before()" in out
     assert "L     R  21 | +new_api_call()" in out
     assert "L  21 R  22 |  context_after()" in out
@@ -956,6 +958,69 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     err = capsys.readouterr().err
     assert "error: line 21 on RIGHT is not a commentable diff line for python/test_file.py." in err
     assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
+
+
+def test_pr_review_comment_supports_multiline_right_side_range(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_leading_context(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/test_file.py b/python/test_file.py",
+                        "index 1111111..2222222 100644",
+                        "--- a/python/test_file.py",
+                        "+++ b/python/test_file.py",
+                        "@@ -20,3 +20,4 @@ def demo():",
+                        " context_before()",
+                        "+new_api_call()",
+                        " context_after()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_leading_context)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--start-line",
+            "21",
+            "--line",
+            "22",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please review this range",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "thread: PRRT_new_1" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert _extract_field(review_call, "startLine") == "21"
+    assert _extract_field(review_call, "startSide") == "RIGHT"
+    assert _extract_field(review_call, "line") == "22"
+    assert _extract_field(review_call, "side") == "RIGHT"
+
 
 
 def test_pr_review_comment_accepts_deleted_file_left_side(
@@ -1076,7 +1141,7 @@ def test_pr_review_comment_null_thread_error_is_precise(
     responder = GhResponder()
 
     def run_with_null_thread(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
-        if cmd[:3] == ["gh", "api", "graphql"] and "addPullRequestReviewThread(input:" in _extract_form(cmd, "query"):
+        if cmd[:3] == ["gh", "api", "graphql"] and "addPullRequestReviewThread" in _extract_form(cmd, "query"):
             return FakeCompletedProcess(json.dumps({"data": {"addPullRequestReviewThread": {"thread": None}}}))
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 

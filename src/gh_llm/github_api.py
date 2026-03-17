@@ -555,8 +555,26 @@ mutation($id:ID!,$event:PullRequestReviewEvent!,$body:String){
 """.strip()
 
 ADD_PULL_REQUEST_REVIEW_THREAD_QUERY = """
-mutation($pullRequestId:ID!,$path:String!,$line:Int!,$side:DiffSide!,$body:String!){
-  addPullRequestReviewThread(input:{pullRequestId:$pullRequestId,path:$path,line:$line,side:$side,body:$body}){
+mutation(
+  $pullRequestId:ID!
+  $path:String!
+  $line:Int!
+  $side:DiffSide!
+  $body:String!
+  $startLine:Int
+  $startSide:DiffSide
+){
+  addPullRequestReviewThread(
+    input:{
+      pullRequestId:$pullRequestId
+      path:$path
+      line:$line
+      side:$side
+      body:$body
+      startLine:$startLine
+      startSide:$startSide
+    }
+  ){
     thread{
       id
       comments(first:1){
@@ -1298,17 +1316,23 @@ mutation($id:ID!,$body:String!){
         line: int,
         side: str,
         body: str,
+        start_line: int | None = None,
+        start_side: str | None = None,
     ) -> tuple[str, str]:
         pr_id = self._resolve_pull_request_node_id(ref)
+        variables: dict[str, object] = {
+            "pullRequestId": pr_id,
+            "path": path,
+            "line": line,
+            "side": side,
+            "body": body,
+        }
+        if start_line is not None:
+            variables["startLine"] = start_line
+            variables["startSide"] = side if start_side is None else start_side
         payload = _run_graphql_payload_any(
             ADD_PULL_REQUEST_REVIEW_THREAD_QUERY,
-            {
-                "pullRequestId": pr_id,
-                "path": path,
-                "line": line,
-                "side": side,
-                "body": body,
-            },
+            variables,
         )
         data_obj = _as_dict(payload.get("data"), context="graphql data")
         added_obj = _as_dict(data_obj.get("addPullRequestReviewThread"), context="addPullRequestReviewThread")
