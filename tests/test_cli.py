@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -392,7 +393,7 @@ class GhResponder:
 
 
 def test_version() -> None:
-    assert __version__ == "0.1.8"
+    assert __version__ == "0.1.9"
 
 
 def test_parse_event_indexes_batch() -> None:
@@ -821,6 +822,255 @@ def test_pr_review_actions_for_llm_flow(
     assert "status: submitted" in out
 
 
+def test_pr_review_start_prefers_first_added_line(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_leading_context(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/test_file.py b/python/test_file.py",
+                        "index 1111111..2222222 100644",
+                        "--- a/python/test_file.py",
+                        "+++ b/python/test_file.py",
+                        "@@ -20,3 +20,4 @@ def demo():",
+                        " context_before()",
+                        "+new_api_call()",
+                        " context_after()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_leading_context)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "gh-llm pr review-comment --path 'python/test_file.py' --line 21 --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path 'python/test_file.py' --line 21 --side RIGHT" in out
+
+
+def test_pr_review_comment_invalid_location_error_is_precise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "21",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please simplify",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: line 21 on RIGHT is not a commentable diff line for python/test_file.py." in err
+    assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
+
+
+def test_pr_review_comment_accepts_deleted_file_left_side(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_deleted_file_diff(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/deleted_file.py b/python/deleted_file.py",
+                        "deleted file mode 100644",
+                        "index 1111111..0000000",
+                        "--- a/python/deleted_file.py",
+                        "+++ /dev/null",
+                        "@@ -1,2 +0,0 @@",
+                        "-old_api_call()",
+                        "-legacy_cleanup()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/deleted_file.py",
+            "--line",
+            "1",
+            "--side",
+            "LEFT",
+            "--body",
+            "please confirm deletion",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "thread: PRRT_new_1" in out
+    assert "status: commented" in out
+
+
+def test_pr_review_comment_deleted_file_right_side_error_is_precise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_deleted_file_diff(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "pr", "diff"]:
+            return FakeCompletedProcess(
+                "\n".join(
+                    [
+                        "diff --git a/python/deleted_file.py b/python/deleted_file.py",
+                        "deleted file mode 100644",
+                        "index 1111111..0000000",
+                        "--- a/python/deleted_file.py",
+                        "+++ /dev/null",
+                        "@@ -1,2 +0,0 @@",
+                        "-old_api_call()",
+                        "-legacy_cleanup()",
+                    ]
+                )
+                + "\n"
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/deleted_file.py",
+            "--line",
+            "1",
+            "--side",
+            "RIGHT",
+            "--body",
+            "this side should not be commentable",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: line 1 on RIGHT is not a commentable diff line for python/deleted_file.py." in err
+    assert "The current diff has no commentable lines on RIGHT for that file." in err
+
+
+def test_pr_review_comment_null_thread_error_is_precise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_null_thread(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and "addPullRequestReviewThread(input:" in _extract_form(cmd, "query"):
+            return FakeCompletedProcess(json.dumps({"data": {"addPullRequestReviewThread": {"thread": None}}}))
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_null_thread)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please simplify",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: failed to create review thread: GitHub rejected the requested review location" in err
+    assert "python/test_file.py:20 RIGHT" in err
+
+
+def test_cli_unexpected_error_shows_issue_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = argparse.ArgumentParser(prog="gh-llm")
+
+    def boom_handler(_: Any) -> int:
+        raise KeyError("boom")
+
+    parser.set_defaults(handler=boom_handler)
+
+    monkeypatch.setattr(cli, "_build_parser", lambda: parser)
+    monkeypatch.setattr(sys, "argv", ["gh-llm"])
+
+    code = cli.run([])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "unexpected error: 'boom'" in err
+    assert "This looks like an unexpected gh-llm failure." in err
+    assert "⌨ issue_title: '<short summary>'" in err
+    assert "⌨ issue_body: '<what happened, expected result, actual result>'" in err
+    assert (
+        "⏎ Create issue via gh: `gh issue create --repo ShigureLab/gh-llm --title '<short summary>' --body '<what happened, expected result, actual result>'`"
+        in err
+    )
+    assert "If useful, include the command that triggered it:" in err
+    assert "gh-llm" in err
+
+
 def test_graphql_eof_retries_with_backoff(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -849,6 +1099,84 @@ def test_graphql_eof_retries_with_backoff(
     assert state["failed_once"] is True
 
 
+def test_pr_review_submit_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "review.md"
+    body_file.write_text("please address comments from file\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "review-submit",
+            "--event",
+            "REQUEST_CHANGES",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: submitted" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(
+        call
+        for call in graphql_calls
+        if (
+            "submitPullRequestReview" in _extract_form(call, "query")
+            or "addPullRequestReview" in _extract_form(call, "query")
+        )
+    )
+    assert _extract_field(review_call, "body") == "please address comments from file\n"
+
+
+def test_pr_review_submit_supports_body_file_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("stdin review body\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-submit",
+            "--event",
+            "COMMENT",
+            "--body-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: submitted" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(
+        call
+        for call in graphql_calls
+        if (
+            "submitPullRequestReview" in _extract_form(call, "query")
+            or "addPullRequestReview" in _extract_form(call, "query")
+        )
+    )
+    assert _extract_field(review_call, "body") == "stdin review body\n"
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -872,6 +1200,14 @@ def _extract_field_int(cmd: list[str], key: str) -> int:
     if raw is None:
         return 0
     return int(raw)
+
+
+class _FakeStdin:
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    def read(self) -> str:
+        return self._content
 
 
 def _forward_page_payload(page_size: int, after: str | None) -> dict[str, Any]:
