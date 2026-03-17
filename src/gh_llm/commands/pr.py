@@ -625,10 +625,10 @@ def cmd_pr_review_start(args: Any) -> int:
     print(f"Total hunks: {len(hunks)}")
     print(f"Δ full diff: `gh pr diff {meta.ref.number} --repo {repo}`")
     comment_template_cmd = display_command_with(
-        f"pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
+        f"pr review-comment --path '<path>' --line [LINE] --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
     )
     suggestion_template_cmd = display_command_with(
-        f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
+        f"pr review-suggest --path '<path>' --line [LINE] --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
     )
     print(f"Comment template: `{comment_template_cmd}`")
     print(f"Suggestion template: `{suggestion_template_cmd}`")
@@ -642,9 +642,11 @@ def cmd_pr_review_start(args: Any) -> int:
         print(f"### Hunk {idx}")
         print(f"File: {hunk.path}")
         print(f"Header: {hunk.header}")
+        available_left_lines = ", ".join(str(line) for line in sorted(hunk.left_commentable_lines)) or "(none)"
         available_right_lines = ", ".join(str(line) for line in sorted(hunk.right_commentable_lines)) or "(none)"
+        print(f"LEFT commentable lines: {available_left_lines}")
         print(f"RIGHT commentable lines: {available_right_lines}")
-        print("Use a RIGHT line number from the numbered diff below with the command templates above.")
+        print("Use a LEFT or RIGHT line number from the numbered diff below with the command templates above.")
         print("```text")
         for line in _render_numbered_hunk_lines(hunk):
             print(line)
@@ -882,20 +884,25 @@ def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
     old_line = int(match.group("old")) if match is not None else 1
     new_line = int(match.group("new")) if match is not None else 1
 
+    def format_line(left: int | None, right: int | None, raw: str) -> str:
+        left_label = f"L{left:>4}" if left is not None else "L    "
+        right_label = f"R{right:>4}" if right is not None else "R    "
+        return f"{left_label} {right_label} | {raw}"
+
     for raw in hunk.lines[1:]:
         marker = raw[:1]
         if marker == "+":
-            rendered.append(f"R{new_line:>4} | {raw}")
+            rendered.append(format_line(None, new_line, raw))
             new_line += 1
         elif marker == " ":
-            rendered.append(f"R{new_line:>4} | {raw}")
+            rendered.append(format_line(old_line, new_line, raw))
             old_line += 1
             new_line += 1
         elif marker == "-":
-            rendered.append(f"L{old_line:>4} | {raw}")
+            rendered.append(format_line(old_line, None, raw))
             old_line += 1
         else:
-            rendered.append(f"      | {raw}")
+            rendered.append(f"            | {raw}")
     return rendered
 
 

@@ -784,10 +784,10 @@ def test_render_numbered_hunk_lines_preserves_real_right_side_line_numbers() -> 
 
     rendered = pr_commands._render_numbered_hunk_lines(hunk)  # pyright: ignore[reportPrivateUsage]
 
-    assert "R 890 |      current_hunk_lines: list[str] = []" in rendered
-    assert "R 891 |      current_old_line = 0" in rendered
-    assert "R 892 |      current_new_line = 0" in rendered
-    assert "R 893 | +    current_right_display_line = 0" in rendered
+    assert "L 890 R 890 |      current_hunk_lines: list[str] = []" in rendered
+    assert "L 891 R 891 |      current_old_line = 0" in rendered
+    assert "L 892 R 892 |      current_new_line = 0" in rendered
+    assert "L     R 893 | +    current_right_display_line = 0" in rendered
 
 
 def test_pr_review_actions_for_llm_flow(
@@ -805,13 +805,14 @@ def test_pr_review_actions_for_llm_flow(
     assert "## Review Start" in out
     assert "Total hunks: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
+    assert "gh-llm pr review-comment --path '<path>' --line [LINE] --side RIGHT" in out
+    assert "gh-llm pr review-suggest --path '<path>' --line [LINE] --side RIGHT" in out
+    assert "LEFT commentable lines: 20" in out
     assert "RIGHT commentable lines: 20" in out
-    assert "Use a RIGHT line number from the numbered diff below" in out
+    assert "Use a LEFT or RIGHT line number from the numbered diff below" in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
-    assert "L  20 | -old_api_call()" in out
-    assert "R  20 | +new_api_call()" in out
+    assert "L  20 R     | -old_api_call()" in out
+    assert "L     R  20 | +new_api_call()" in out
     assert "Suggested anchor line" not in out
 
     code = cli.run(
@@ -917,10 +918,11 @@ def test_pr_review_start_shows_numbered_right_side_lines(
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
+    assert "LEFT commentable lines: 20, 21" in out
     assert "RIGHT commentable lines: 20, 21, 22" in out
-    assert "R  20 |  context_before()" in out
-    assert "R  21 | +new_api_call()" in out
-    assert "R  22 |  context_after()" in out
+    assert "L  20 R  20 |  context_before()" in out
+    assert "L     R  21 | +new_api_call()" in out
+    assert "L  21 R  22 |  context_after()" in out
 
 
 def test_pr_review_comment_invalid_location_error_is_precise(
@@ -939,7 +941,7 @@ def test_pr_review_comment_invalid_location_error_is_precise(
             "--path",
             "python/test_file.py",
             "--line",
-            "20",
+            "21",
             "--side",
             "RIGHT",
             "--body",
@@ -952,8 +954,8 @@ def test_pr_review_comment_invalid_location_error_is_precise(
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "error: line 20 on RIGHT is not a commentable diff line for python/test_file.py." in err
-    assert "Try a line from the PR diff for that side instead (e.g. 21)." in err
+    assert "error: line 21 on RIGHT is not a commentable diff line for python/test_file.py." in err
+    assert "Try a line from the PR diff for that side instead (e.g. 20)." in err
 
 
 def test_pr_review_comment_accepts_deleted_file_left_side(
