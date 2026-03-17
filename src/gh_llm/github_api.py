@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import subprocess
@@ -8,10 +9,20 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from gh_llm.invocation import display_command, display_command_with
-from gh_llm.models import CheckItem, PageInfo, PullRequestMeta, PullRequestRef, TimelineEvent, TimelinePage
+from gh_llm.models import (
+    CheckItem,
+    PageInfo,
+    PullRequestDiffFile,
+    PullRequestDiffPage,
+    PullRequestMeta,
+    PullRequestRef,
+    ReviewThreadSummary,
+    TimelineEvent,
+    TimelinePage,
+)
 
 MAX_INLINE_TEXT = 8000
 MAX_INLINE_LINES = 200
@@ -664,6 +675,8 @@ query($owner:String!,$name:String!,$qualifiedName:String!){
 
 class GitHubClient:
     def __init__(self) -> None:
+        self._file_lines_cache: dict[tuple[str, str, str, str], tuple[str, ...] | None] = {}
+        self._review_threads_raw_cache: dict[tuple[str, str, int], tuple[dict[str, object], ...]] = {}
         self._review_threads_cache: dict[tuple[str, str, int], dict[str, list[dict[str, object]]]] = {}
         self._viewer_login: str | None = None
 
@@ -677,6 +690,7 @@ class GitHubClient:
             "isDraft",
             "body",
             "updatedAt",
+            "changedFiles",
             "labels",
             "reactionGroups",
             "mergeStateStatus",
@@ -699,6 +713,7 @@ class GitHubClient:
         is_draft = bool(payload.get("isDraft"))
         body = _as_optional_str(payload.get("body")) or ""
         updated_at = _as_optional_str(payload.get("updatedAt")) or ""
+        changed_files = _as_optional_int(payload.get("changedFiles"))
         labels = tuple(_extract_label_names(payload))
         reactions_summary = _format_reactions(payload.get("reactionGroups"))
 
@@ -747,6 +762,7 @@ class GitHubClient:
             is_draft=is_draft,
             body=body,
             updated_at=updated_at,
+            changed_files=changed_files,
             labels=labels,
             kind="pr",
             reactions_summary=reactions_summary,
@@ -917,6 +933,42 @@ class GitHubClient:
             return cached
 
         by_review: dict[str, list[dict[str, object]]] = {}
+        for raw_thread in self._get_review_threads(ref):
+            thread = _as_dict(raw_thread, context="reviewThread")
+            thread_id = _as_optional_str(thread.get("id")) or ""
+            is_resolved = bool(thread.get("isResolved"))
+            comments = [
+                _as_dict(comment, context="reviewThread comment") for comment in _as_list(thread.get("comments"))
+            ]
+
+            comments_by_review: dict[str, list[dict[str, object]]] = {}
+            for comment in comments:
+                review_obj = _as_dict_optional(comment.get("pullRequestReview"))
+                review_id = _as_optional_str(review_obj.get("id")) if review_obj is not None else None
+                if review_id:
+                    comments_by_review.setdefault(review_id, []).append(comment)
+
+            if not comments_by_review:
+                continue
+
+            for review_id, review_comments in comments_by_review.items():
+                thread_payload: dict[str, object] = {
+                    "id": thread_id,
+                    "isResolved": is_resolved,
+                    "comments": review_comments,
+                }
+                by_review.setdefault(review_id, []).append(thread_payload)
+
+        self._review_threads_cache[key] = by_review
+        return by_review
+
+    def _get_review_threads(self, ref: PullRequestRef) -> tuple[dict[str, object], ...]:
+        key = (ref.owner, ref.name, ref.number)
+        cached = self._review_threads_raw_cache.get(key)
+        if cached is not None:
+            return cached
+
+        threads: list[dict[str, object]] = []
         after: str | None = None
         while True:
             variables: dict[str, str | int] = {
@@ -939,24 +991,19 @@ class GitHubClient:
                 comments_obj = _as_dict_optional(thread.get("comments"))
                 if comments_obj is None:
                     continue
-                comments_by_review: dict[str, list[dict[str, object]]] = {}
-                for raw_comment in _as_list(comments_obj.get("nodes")):
-                    comment = _as_dict(raw_comment, context="reviewThread comment")
-                    review_obj = _as_dict_optional(comment.get("pullRequestReview"))
-                    review_id = _as_optional_str(review_obj.get("id")) if review_obj is not None else None
-                    if review_id:
-                        comments_by_review.setdefault(review_id, []).append(comment)
-
-                if not comments_by_review:
+                comments = [
+                    _as_dict(raw_comment, context="reviewThread comment")
+                    for raw_comment in _as_list(comments_obj.get("nodes"))
+                ]
+                if not comments:
                     continue
-
-                for review_id, review_comments in comments_by_review.items():
-                    thread_payload: dict[str, object] = {
+                threads.append(
+                    {
                         "id": thread_id,
                         "isResolved": is_resolved,
-                        "comments": review_comments,
+                        "comments": comments,
                     }
-                    by_review.setdefault(review_id, []).append(thread_payload)
+                )
 
             page_info = _as_dict(threads_obj.get("pageInfo"), context="reviewThreads pageInfo")
             has_next = bool(page_info.get("hasNextPage"))
@@ -964,8 +1011,37 @@ class GitHubClient:
             if not has_next:
                 break
 
-        self._review_threads_cache[key] = by_review
-        return by_review
+        result = tuple(threads)
+        self._review_threads_raw_cache[key] = result
+        return result
+
+    def fetch_review_thread_summaries(self, ref: PullRequestRef) -> tuple[ReviewThreadSummary, ...]:
+        summaries: list[ReviewThreadSummary] = []
+        for raw_thread in self._get_review_threads(ref):
+            thread = _as_dict(raw_thread, context="reviewThread")
+            thread_id = _as_optional_str(thread.get("id")) or ""
+            comments = [
+                _as_dict(comment, context="reviewThread comment") for comment in _as_list(thread.get("comments"))
+            ]
+            if not comments:
+                continue
+            path = _first_non_empty_comment_path(comments)
+            if not path:
+                continue
+            right_lines = _collect_thread_lines(comments, keys=("startLine", "line"))
+            left_lines = _collect_thread_lines(comments, keys=("originalStartLine", "originalLine"))
+            summaries.append(
+                ReviewThreadSummary(
+                    thread_id=thread_id,
+                    path=path,
+                    is_resolved=bool(thread.get("isResolved")),
+                    comment_count=len(comments),
+                    right_lines=right_lines,
+                    left_lines=left_lines,
+                    display_ref=_format_thread_summary_display_ref(right_lines=right_lines, left_lines=left_lines),
+                )
+            )
+        return tuple(summaries)
 
     def expand_review_thread(
         self,
@@ -1246,6 +1322,86 @@ mutation($id:ID!,$body:String!){
             cmd.extend(["--repo", repo])
         return _run_command_text(cmd)
 
+    def fetch_pr_files_page(self, meta: PullRequestMeta, *, page: int, page_size: int) -> PullRequestDiffPage:
+        if page < 1:
+            raise RuntimeError(f"invalid file page {page}, expected >= 1")
+        if page_size < 1 or page_size > 100:
+            raise RuntimeError(f"invalid file page size {page_size}, expected in 1..100")
+
+        total_files = meta.changed_files or 0
+        total_pages = max(1, (total_files + page_size - 1) // page_size) if total_files > 0 else 1
+        if total_files > 0 and page > total_pages:
+            raise RuntimeError(f"invalid file page {page}, expected in 1..{total_pages}")
+
+        path = f"repos/{meta.ref.owner}/{meta.ref.name}/pulls/{meta.ref.number}/files?per_page={page_size}&page={page}"
+        payload = _run_command_json_any(
+            ["gh", "api", path],
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
+        raw_files = _as_list(payload)
+        files: list[PullRequestDiffFile] = []
+        for raw_file in raw_files:
+            file_obj = _as_dict_optional(raw_file)
+            if file_obj is None:
+                continue
+            path_value = _as_optional_str(file_obj.get("filename"))
+            if not path_value:
+                continue
+            files.append(
+                PullRequestDiffFile(
+                    path=path_value,
+                    status=(_as_optional_str(file_obj.get("status")) or "unknown"),
+                    additions=_as_int_default(file_obj.get("additions"), default=0),
+                    deletions=_as_int_default(file_obj.get("deletions"), default=0),
+                    changes=_as_int_default(file_obj.get("changes"), default=0),
+                    patch=_as_optional_str(file_obj.get("patch")),
+                    previous_path=_as_optional_str(file_obj.get("previous_filename")),
+                )
+            )
+        return PullRequestDiffPage(
+            page=page,
+            page_size=page_size,
+            total_files=total_files,
+            total_pages=total_pages,
+            files=tuple(files),
+        )
+
+    def fetch_file_lines(self, ref: PullRequestRef, *, path: str, revision: str) -> tuple[str, ...] | None:
+        cache_key = (ref.owner, ref.name, revision, path)
+        if cache_key in self._file_lines_cache:
+            return self._file_lines_cache[cache_key]
+
+        api_path = f"repos/{ref.owner}/{ref.name}/contents/{quote(path, safe='/')}?ref={revision}"
+        try:
+            payload = _run_command_json(
+                ["gh", "api", api_path],
+                max_attempts=GRAPHQL_MAX_ATTEMPTS,
+                backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+                backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+            )
+        except RuntimeError:
+            self._file_lines_cache[cache_key] = None
+            return None
+
+        encoding = _as_optional_str(payload.get("encoding"))
+        content = _as_optional_str(payload.get("content"))
+        if encoding != "base64" or content is None:
+            self._file_lines_cache[cache_key] = None
+            return None
+
+        normalized = content.replace("\n", "")
+        try:
+            decoded = base64.b64decode(normalized, validate=False).decode("utf-8", errors="replace")
+        except (ValueError, UnicodeDecodeError):
+            self._file_lines_cache[cache_key] = None
+            return None
+
+        lines = tuple(decoded.splitlines())
+        self._file_lines_cache[cache_key] = lines
+        return lines
+
     def submit_pull_request_review(
         self,
         *,
@@ -1481,6 +1637,42 @@ mutation($id:ID!,$body:String!){
         )
 
 
+def _first_non_empty_comment_path(comments: list[dict[str, object]]) -> str | None:
+    for comment in comments:
+        path = _as_optional_str(comment.get("path"))
+        if path:
+            return path
+    return None
+
+
+def _collect_thread_lines(comments: list[dict[str, object]], *, keys: tuple[str, ...]) -> tuple[int, ...]:
+    lines: set[int] = set()
+    for comment in comments:
+        for key in keys:
+            value = _as_optional_int(comment.get(key))
+            if value is not None and value > 0:
+                lines.add(value)
+    return tuple(sorted(lines))
+
+
+def _format_thread_summary_display_ref(
+    *,
+    right_lines: tuple[int, ...],
+    left_lines: tuple[int, ...],
+) -> str | None:
+    if right_lines:
+        return _format_thread_summary_span("R", right_lines)
+    if left_lines:
+        return _format_thread_summary_span("L", left_lines)
+    return None
+
+
+def _format_thread_summary_span(prefix: str, lines: tuple[int, ...]) -> str:
+    if len(lines) == 1:
+        return f"{prefix}{lines[0]}"
+    return f"{prefix}{lines[0]}-{lines[-1]}"
+
+
 def _run_graphql_connection(
     query: str, variables: dict[str, str | int], *, subject_key: str = "pullRequest"
 ) -> dict[str, object]:
@@ -1534,6 +1726,29 @@ def _run_command_json(
                 raise RuntimeError("unexpected non-object JSON response")
             raw = cast("dict[object, object]", parsed)
             return {str(k): v for k, v in raw.items()}
+
+        stderr = result.stderr.strip()
+        if attempt >= attempts or not _is_retryable_gh_error(stderr):
+            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+        delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
+        if delay > 0:
+            time.sleep(delay)
+
+    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
+
+
+def _run_command_json_any(
+    cmd: list[str],
+    *,
+    max_attempts: int = 1,
+    backoff_base_seconds: float = 0.0,
+    backoff_max_seconds: float = 0.0,
+) -> object:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        if result.returncode == 0:
+            return json.loads(result.stdout)
 
         stderr = result.stderr.strip()
         if attempt >= attempts or not _is_retryable_gh_error(stderr):
@@ -2518,6 +2733,17 @@ def _run_plain_command(cmd: list[str], *, cwd: str) -> bool:
 def _as_optional_bool(value: object) -> bool | None:
     if isinstance(value, bool):
         return value
+    return None
+
+
+def _as_optional_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
     return None
 
 

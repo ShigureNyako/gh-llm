@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
 import sys
@@ -34,10 +35,13 @@ class GhResponder:
         if cmd[:3] == ["gh", "pr", "view"]:
             pr_number = self._extract_pr_number(cmd)
             state = "OPEN"
+            changed_files = 1
             if pr_number == 77827:
                 state = "CLOSED"
             elif pr_number == 77960:
                 state = "MERGED"
+            elif pr_number == 78255:
+                changed_files = 3
             merge_state_status = "CLEAN"
             mergeable = "MERGEABLE"
             if pr_number == 77971:
@@ -68,6 +72,7 @@ class GhResponder:
                         "isDraft": False,
                         "body": "This is PR description",
                         "updatedAt": "2026-02-16T09:00:00Z",
+                        "changedFiles": changed_files,
                         "mergeStateStatus": merge_state_status,
                         "mergeable": mergeable,
                         "commits": commits_payload,
@@ -110,6 +115,9 @@ class GhResponder:
 
         if cmd[:3] == ["gh", "api", "user"]:
             return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
+
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
+            return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
 
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
@@ -411,7 +419,6 @@ def test_view_and_expand_use_real_cursor_pagination(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
@@ -608,7 +615,6 @@ def test_web_like_extra_timeline_events_are_rendered(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
 
     code = cli.run(["pr", "timeline-expand", "4", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
@@ -640,7 +646,6 @@ def test_title_renamed_event_is_rendered(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
 
     code = cli.run(["pr", "timeline-expand", "7", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
@@ -659,7 +664,6 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(["issue", "view", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
@@ -797,19 +801,35 @@ def test_pr_review_actions_for_llm_flow(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
     assert "## Review Start" in out
-    assert "Total hunks: 1" in out
+    assert "Head snapshot: 3333333333333333333333333333333333333333" in out
+    assert "Files changed: 1" in out
+    assert "File page: 1/1 (1-1 of 1)" in out
+    assert "Hunks on this page: 1" in out
     assert "gh pr diff 77928 --repo PaddlePaddle/Paddle" in out
-    assert "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT" in out
-    assert "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT" in out
-    assert "gh-llm pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT" in out
+    assert (
+        "gh-llm pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' --head 3333333333333333333333333333333333333333 --pr 77928 --repo PaddlePaddle/Paddle"
+        in out
+    )
+    assert (
+        "gh-llm pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --head 3333333333333333333333333333333333333333 --pr 77928 --repo PaddlePaddle/Paddle"
+        in out
+    )
+    assert (
+        "gh-llm pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body '<review_comment>' --head 3333333333333333333333333333333333333333 --pr 77928 --repo PaddlePaddle/Paddle"
+        in out
+    )
+    assert "gh-llm pr thread-expand <thread_id> --pr 77928 --repo PaddlePaddle/Paddle" in out
+    assert "### File 1/1: python/test_file.py" in out
+    assert "Status: modified (+1 -1, 2 changes)" in out
+    assert "Existing review threads in this file: 2 (1 unresolved, 1 resolved)" in out
     assert "LEFT commentable span(s): 20" in out
     assert "RIGHT commentable span(s): 20" in out
+    assert "Related review threads in this hunk:" not in out
     assert "Use the L#### / R#### labels from the numbered diff below as --line values." in out
     assert "For a continuous multi-line range on the same side, add --start-line <start_line>." in out
     assert "@@ -20,2 +20,2 @@ def demo():" in out
@@ -896,35 +916,325 @@ def test_pr_review_start_shows_numbered_right_side_lines(
     def run_with_leading_context(
         cmd: list[str], *, check: bool, capture_output: bool, text: bool
     ) -> FakeCompletedProcess:
-        if cmd[:3] == ["gh", "pr", "diff"]:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
             return FakeCompletedProcess(
-                "\n".join(
+                json.dumps(
                     [
-                        "diff --git a/python/test_file.py b/python/test_file.py",
-                        "index 1111111..2222222 100644",
-                        "--- a/python/test_file.py",
-                        "+++ b/python/test_file.py",
-                        "@@ -20,3 +20,4 @@ def demo():",
-                        " context_before()",
-                        "+new_api_call()",
-                        " context_after()",
+                        {
+                            "filename": "python/test_file.py",
+                            "status": "modified",
+                            "additions": 1,
+                            "deletions": 0,
+                            "changes": 1,
+                            "patch": "\n".join(
+                                [
+                                    "@@ -20,3 +20,4 @@ def demo():",
+                                    " context_before()",
+                                    "+new_api_call()",
+                                    " context_after()",
+                                ]
+                            ),
+                        }
                     ]
                 )
-                + "\n"
             )
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 
     monkeypatch.setattr(github_api.subprocess, "run", run_with_leading_context)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
+    assert "Existing review threads in this file: 2 (1 unresolved, 1 resolved)" in out
+    assert "Related review threads in this hunk:" in out
+    assert "- unresolved PRRT_mock_1 at R21-23 (2 comments)" in out
+    assert "- resolved PRRT_mock_2 at R22 (1 comment)" in out
     assert "LEFT commentable span(s): 20-21" in out
     assert "RIGHT commentable span(s): 20-22" in out
     assert "L  20 R  20 |  context_before()" in out
     assert "L     R  21 | +new_api_call()" in out
     assert "L  21 R  22 |  context_after()" in out
+
+
+def test_pr_review_start_supports_extra_context_lines(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    head_lines = [f"line_{index}" for index in range(1, 26)]
+    head_lines[18] = "before_api()"
+    head_lines[19] = "new_api_call()"
+    head_lines[20] = "after_api()"
+
+    def run_with_file_contents(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents/" in cmd[2]:
+            payload = {
+                "type": "file",
+                "encoding": "base64",
+                "content": base64.b64encode("\n".join(head_lines).encode("utf-8")).decode("ascii"),
+            }
+            return FakeCompletedProcess(json.dumps(payload))
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_file_contents)
+
+    code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--context-lines", "1"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Extra context lines: 1" in out
+    assert "L  19 R  19 |  before_api()" in out
+    assert "L     R  20 | +new_api_call()" in out
+    assert "L  21 R  21 |  after_api()" in out
+
+
+def test_pr_review_start_supports_changed_file_pagination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Files changed: 3" in out
+    assert "Head snapshot: 3333333333333333333333333333333333333333" in out
+    assert "File page: 1/2 (1-2 of 3)" in out
+    assert "### File 1/3: .gitignore" in out
+    assert "### File 2/3: paddle/phi/api/include/compat/ATen/core/TensorBase.h" in out
+    assert "next file page" in out
+    assert (
+        "gh-llm pr review-start --page 2 --page-size 2 --max-hunks 40 --head 3333333333333333333333333333333333333333 --pr 78255 --repo PaddlePaddle/Paddle"
+        in out
+    )
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--context-lines",
+            "1",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Extra context lines: 1" in out
+    assert (
+        "gh-llm pr review-start --page 2 --page-size 2 --max-hunks 40 --head 3333333333333333333333333333333333333333 --context-lines 1 --pr 78255 --repo PaddlePaddle/Paddle"
+        in out
+    )
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page",
+            "2",
+            "--page-size",
+            "2",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "File page: 2/2 (3-3 of 3)" in out
+    assert "### File 3/3: paddle/phi/api/include/compat/ATen/core/TensorBody.h" in out
+    assert "previous file page" in out
+
+
+def test_pr_review_start_supports_path_focus_and_hunk_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--path",
+            "TensorBody.h",
+            "--hunks",
+            "2-3",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Focused file: paddle/phi/api/include/compat/ATen/core/TensorBody.h (3/3)" in out
+    assert "### File 3/3: paddle/phi/api/include/compat/ATen/core/TensorBody.h" in out
+    assert "#### Hunk 2" in out
+    assert "#### Hunk 3" in out
+    assert "#### Hunk 1" not in out
+    assert "next file page" not in out
+
+
+def test_pr_review_start_supports_file_range_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--files",
+            "2-3",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Selected files: 2-3 of 3" in out
+    assert "### File 2/3: paddle/phi/api/include/compat/ATen/core/TensorBase.h" in out
+    assert "### File 3/3: paddle/phi/api/include/compat/ATen/core/TensorBody.h" in out
+    assert "### File 1/3: .gitignore" not in out
+    assert (
+        "gh-llm pr review-start --files 1 --max-hunks 40 --head 3333333333333333333333333333333333333333 --pr 78255 --repo PaddlePaddle/Paddle"
+        in out
+    )
+    assert "next file selection" not in out
+    assert "next file page" not in out
+
+
+def test_pr_review_start_rejects_hunks_without_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--hunks",
+            "2-3",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: `--hunks` requires `--path`" in err
+
+
+def test_pr_review_start_rejects_files_with_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--files",
+            "2-3",
+            "--path",
+            "TensorBody.h",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: `--files` cannot be combined with `--path`" in err
+
+
+def test_pr_review_start_rejects_stale_head_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-start",
+            "--pr",
+            "78255",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--head",
+            "deadbeef",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: stale review snapshot: requested --head deadbeef" in err
+    assert "current head is 3333333333333333333333333333333333333333" in err
+    assert "gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle" in err
+
+
+def test_pr_review_comment_rejects_stale_head_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body",
+            "please simplify",
+            "--head",
+            "deadbeef",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: stale review snapshot: requested --head deadbeef" in err
 
 
 def test_pr_review_comment_invalid_location_error_is_precise(
@@ -934,7 +1244,6 @@ def test_pr_review_comment_invalid_location_error_is_precise(
 ) -> None:
     responder = GhResponder()
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(
         [
@@ -989,7 +1298,6 @@ def test_pr_review_comment_supports_multiline_right_side_range(
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 
     monkeypatch.setattr(github_api.subprocess, "run", run_with_leading_context)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(
         [
@@ -1051,7 +1359,6 @@ def test_pr_review_comment_accepts_deleted_file_left_side(
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 
     monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(
         [
@@ -1106,7 +1413,6 @@ def test_pr_review_comment_deleted_file_right_side_error_is_precise(
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 
     monkeypatch.setattr(github_api.subprocess, "run", run_with_deleted_file_diff)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(
         [
@@ -1145,7 +1451,6 @@ def test_pr_review_comment_null_thread_error_is_precise(
         return responder.run(cmd, check=check, capture_output=capture_output, text=text)
 
     monkeypatch.setattr(github_api.subprocess, "run", run_with_null_thread)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(
         [
@@ -1219,7 +1524,6 @@ def test_graphql_eof_retries_with_backoff(
 
     monkeypatch.setattr(github_api.subprocess, "run", flaky_run)
     monkeypatch.setattr(github_api.time, "sleep", no_sleep)
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
@@ -1329,6 +1633,97 @@ def _extract_field_int(cmd: list[str], key: str) -> int:
     if raw is None:
         return 0
     return int(raw)
+
+
+def _pull_files_payload(path: str) -> list[dict[str, Any]]:
+    route, _, query = path.partition("?")
+    route_parts = route.split("/")
+    pr_number = int(route_parts[4]) if len(route_parts) >= 5 else 77928
+    params = {
+        key: value
+        for key, _, value in (segment.partition("=") for segment in query.split("&") if segment)
+        if key and value
+    }
+    page = int(params.get("page", "1"))
+    per_page = int(params.get("per_page", "30"))
+
+    if pr_number == 78255:
+        files = [
+            {
+                "filename": ".gitignore",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "changes": 2,
+                "patch": "\n".join(
+                    [
+                        "@@ -68,2 +68,2 @@ Makefile",
+                        "-old_ignore",
+                        "+new_ignore",
+                    ]
+                ),
+            },
+            {
+                "filename": "paddle/phi/api/include/compat/ATen/core/TensorBase.h",
+                "status": "modified",
+                "additions": 2,
+                "deletions": 3,
+                "changes": 5,
+                "patch": "\n".join(
+                    [
+                        "@@ -257,3 +257,2 @@ class PADDLE_API TensorBase {",
+                        "-  c10::TensorOptions options() const {",
+                        "-    return c10::TensorOptions().dtype(dtype()).device(device());",
+                        "+  TensorOptions options() const {",
+                        "+    return TensorOptions().dtype(dtype()).device(device()).layout(layout());",
+                    ]
+                ),
+            },
+            {
+                "filename": "paddle/phi/api/include/compat/ATen/core/TensorBody.h",
+                "status": "modified",
+                "additions": 6,
+                "deletions": 0,
+                "changes": 6,
+                "patch": "\n".join(
+                    [
+                        "@@ -38,2 +38,3 @@",
+                        ' #include "paddle/phi/api/include/api.h"',
+                        '+#include "glog/logging.h"',
+                        " namespace at {",
+                        "@@ -397,2 +398,4 @@ class Tensor : public TensorBase {",
+                        "   bool is_pinned() const {",
+                        '+    LOG(WARNING) << "deprecated";',
+                        "+    return false;",
+                        "@@ -822,2 +867,1 @@ class Tensor : public TensorBase {",
+                        "   PaddleTensor& _PD_GetInner() { return tensor_; }",
+                        "-namespace torch {",
+                        "-using at::Tensor;",
+                    ]
+                ),
+            },
+        ]
+    else:
+        files = [
+            {
+                "filename": "python/test_file.py",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "changes": 2,
+                "patch": "\n".join(
+                    [
+                        "@@ -20,2 +20,2 @@ def demo():",
+                        "-old_api_call()",
+                        "+new_api_call()",
+                    ]
+                ),
+            }
+        ]
+
+    start = max(0, (page - 1) * per_page)
+    end = start + per_page
+    return files[start:end]
 
 
 class _FakeStdin:

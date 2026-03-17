@@ -24,6 +24,7 @@ class PullRequestMeta:
     is_draft: bool
     body: str
     updated_at: str
+    changed_files: int | None = None
     labels: tuple[str, ...] = ()
     kind: str = "pr"
     reactions_summary: str | None = None
@@ -92,6 +93,37 @@ class CheckItem:
     details_url: str | None = None
     run_id: int | None = None
     job_id: int | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestDiffFile:
+    path: str
+    status: str
+    additions: int
+    deletions: int
+    changes: int
+    patch: str | None = None
+    previous_path: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestDiffPage:
+    page: int
+    page_size: int
+    total_files: int
+    total_pages: int
+    files: tuple[PullRequestDiffFile, ...]
+
+
+@dataclass(frozen=True)
+class ReviewThreadSummary:
+    thread_id: str
+    path: str
+    is_resolved: bool
+    comment_count: int
+    right_lines: tuple[int, ...] = ()
+    left_lines: tuple[int, ...] = ()
+    display_ref: str | None = None
 
 
 @dataclass

@@ -139,20 +139,87 @@ If partially fixed or unchanged, include reason and next step.
 
 ## Review workflow
 
-### As reviewer
+### Review a PR as reviewer
 
-1. Separate blocking vs non-blocking points.
-2. Give actionable suggestions.
-3. Point to exact location when possible.
-4. Avoid generic criticism without concrete evidence.
+1. Read the whole PR first, not just one hunk:
+
+```bash
+gh-llm pr view <pr> --repo <owner/repo>
+gh-llm pr checks --pr <pr> --repo <owner/repo>
+gh-llm pr review-start --pr <pr> --repo <owner/repo>
+```
+
+2. For large PRs, narrow the diff instead of guessing:
+
+```bash
+gh-llm pr review-start --pr <pr> --repo <owner/repo> --files 6-12
+gh-llm pr review-start --pr <pr> --repo <owner/repo> --path 'path/to/file'
+gh-llm pr review-start --pr <pr> --repo <owner/repo> --path 'path/to/file' --hunks 2-4
+gh-llm pr review-start --pr <pr> --repo <owner/repo> --context-lines 3
+```
+
+3. Before writing a new comment, check whether the same location already has unresolved review threads.
+4. Use one pending review for one review round. Prefer multiple inline comments plus one final summary, not many separate top-level reviews.
+5. Use `review-suggest` only when the exact replacement is clear and small enough to be safely suggested inline.
+6. Use `review-comment` for questions, design concerns, missing tests, missing context, or changes too large for a suggestion block.
+7. Distinguish severity clearly:
+   - blocking: correctness, behavior regression, missing required tests, broken API/ABI, unsafe edge case
+   - non-blocking: readability, style, naming, optional refactor, small follow-up
+8. Every blocking point should make the next action obvious: what is wrong, where it is, and what kind of fix is expected.
+
+### Submit review comments
+
+Use inline comments during reading:
+
+```bash
+gh-llm pr review-comment \
+  --path 'path/to/file' \
+  --line <line> \
+  --side RIGHT \
+  --body '<comment>' \
+  --pr <pr> --repo <owner/repo>
+
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line <line> \
+  --side RIGHT \
+  --body '<why>' \
+  --suggestion '<replacement>' \
+  --pr <pr> --repo <owner/repo>
+```
+
+Then submit one review:
+
+```bash
+gh-llm pr review-submit --event COMMENT --body '<summary>' --pr <pr> --repo <owner/repo>
+gh-llm pr review-submit --event REQUEST_CHANGES --body '<summary>' --pr <pr> --repo <owner/repo>
+gh-llm pr review-submit --event APPROVE --body '<summary>' --pr <pr> --repo <owner/repo>
+```
+
+Use the final review summary to group the round:
+
+1. what is blocking
+2. what is optional
+3. what is already good
 
 ### As PR author
 
-1. Expand and read all relevant review content.
-2. Address items one by one.
-3. Reply to each addressed thread.
-4. Resolve a thread only after fix/decision is actually complete.
-5. Post one concise round-up after a batch of fixes.
+1. Expand all relevant review content before changing code:
+
+```bash
+gh-llm pr view <pr> --repo <owner/repo>
+gh-llm pr review-expand <PRR_id[,PRR_id...]> --pr <pr> --repo <owner/repo>
+gh-llm pr thread-expand <PRRT_id> --pr <pr> --repo <owner/repo>
+```
+
+2. Address review items one by one, but reply in batches when possible to avoid noisy back-and-forth.
+3. Reply to each resolved point with concrete status:
+   - what changed
+   - where it changed
+   - why a point was not adopted, if applicable
+4. Resolve a thread only after the fix or decision is actually complete.
+5. If a reviewer's suggestion is substantially adopted, add proper co-author credit in the follow-up commit.
+6. After a batch of fixes, post one concise round-up so the reviewer can re-check efficiently.
 
 ## Issue workflow
 

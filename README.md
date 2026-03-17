@@ -139,9 +139,29 @@ gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 
 ```bash
 gh-llm pr review-start --pr 77938 --repo PaddlePaddle/Paddle
+
+# Large PRs: load the next changed-file page
+gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --page 2 --page-size 5
+
+# Jump to an absolute changed-file range directly
+gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --files 6-12
+
+# Add extra unchanged context around each hunk
+gh-llm pr review-start --pr 77938 --repo PaddlePaddle/Paddle --context-lines 3
+
+# Focus one changed file directly
+gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --path 'paddle/phi/api/include/compat/ATen/core/TensorBody.h'
+
+# Show only selected hunks inside that file
+gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --path 'TensorBody.h' --hunks 2-3
+
+# Reuse a pinned head snapshot when loading another page
+gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --page 2 --page-size 5 --head <head_sha>
 ```
 
-It prints per-hunk commentable LEFT/RIGHT line ranges, numbered diff lines, and ready-to-run comment/suggestion commands.
+It prints changed-file page summary, lightweight existing review-thread summaries for the current file/hunk, per-hunk commentable LEFT/RIGHT line ranges, numbered diff lines, and ready-to-run comment/suggestion commands.
+Generated follow-up commands reuse `--head <head_sha>` automatically so pagination and inline review commands stay on the same PR snapshot; stale snapshots are rejected with a refresh hint.
+Use `--context-lines <n>` when the GitHub patch hunk is too tight and you need a small amount of extra unchanged code around it.
 
 ### 2) Add inline comment
 

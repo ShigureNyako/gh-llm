@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from gh_llm.commands.options import raise_unknown_option_value
 from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
+from gh_llm.models import PullRequestDiffPage
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
     render_checks_section,
@@ -26,9 +27,16 @@ from gh_llm.render import (
 )
 
 if TYPE_CHECKING:
-    from gh_llm.models import PullRequestMeta, TimelineContext, TimelinePage
+    from gh_llm.models import (
+        PullRequestDiffFile,
+        PullRequestMeta,
+        ReviewThreadSummary,
+        TimelineContext,
+        TimelinePage,
+    )
 
 DEFAULT_DIFF_HUNK_LINES = 12
+DEFAULT_REVIEW_START_FILE_PAGE_SIZE = 5
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,35 @@ def register_pr_parser(subparsers: Any) -> None:
     )
     review_start_parser.add_argument("--pr", help="PR number/url/branch")
     review_start_parser.add_argument("--repo", help="repository in OWNER/REPO format")
+    review_start_parser.add_argument("--page", type=int, help="1-based changed-file page number")
+    review_start_parser.add_argument(
+        "--page-size",
+        type=int,
+        default=DEFAULT_REVIEW_START_FILE_PAGE_SIZE,
+        help="changed files per page",
+    )
+    review_start_parser.add_argument(
+        "--files",
+        help="1-based changed-file selection, e.g. 6-12 or 3,5-7; bypasses page pagination",
+    )
+    review_start_parser.add_argument(
+        "--path",
+        help="focus one changed file by exact path or unique suffix match; bypasses file pagination",
+    )
+    review_start_parser.add_argument(
+        "--hunks",
+        help="1-based hunk selection within --path, e.g. 2,4-6",
+    )
+    review_start_parser.add_argument(
+        "--head",
+        help="pin review-start to a PR head sha; generated commands will reuse this snapshot",
+    )
+    review_start_parser.add_argument(
+        "--context-lines",
+        type=int,
+        default=0,
+        help="extra unchanged lines before/after each hunk when available",
+    )
     review_start_parser.add_argument("--max-hunks", type=int, default=40, help="maximum hunks to render")
     review_start_parser.set_defaults(handler=cmd_pr_review_start)
 
@@ -217,6 +254,7 @@ def register_pr_parser(subparsers: Any) -> None:
         choices=["RIGHT", "LEFT"],
         help="starting diff side for a multi-line range (defaults to --side)",
     )
+    review_comment_parser.add_argument("--head", help="expected PR head sha for stale-snapshot protection")
     review_comment_parser.add_argument("--body", required=True, help="review comment body")
     review_comment_parser.add_argument("--pr", help="PR number/url/branch")
     review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -238,6 +276,7 @@ def register_pr_parser(subparsers: Any) -> None:
         required=True,
         help="replacement content inserted inside ```suggestion block",
     )
+    review_suggest_parser.add_argument("--head", help="expected PR head sha for stale-snapshot protection")
     review_suggest_parser.add_argument("--pr", help="PR number/url/branch")
     review_suggest_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_suggest_parser.set_defaults(handler=cmd_pr_review_suggest)
@@ -621,59 +660,277 @@ def cmd_pr_comment_expand(args: Any) -> int:
 def cmd_pr_review_start(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
-    diff = client.fetch_pr_diff(selector=getattr(args, "pr", None), repo=getattr(args, "repo", None))
-    hunks = _extract_diff_hunks(diff)
+    pinned_head = _validate_pr_head_snapshot(meta=meta, requested_head=_resolve_requested_head(args))
+    file_selection_raw = _resolve_review_start_files(args)
+    path_filter = _resolve_review_start_path(args)
+    hunk_selection_raw = _resolve_review_start_hunks(args)
+    if file_selection_raw is not None and path_filter is not None:
+        raise RuntimeError("`--files` cannot be combined with `--path`")
+    if file_selection_raw is not None and getattr(args, "page", None) is not None:
+        raise RuntimeError("`--files` cannot be combined with `--page`")
+    if hunk_selection_raw is not None and path_filter is None:
+        raise RuntimeError("`--hunks` requires `--path`")
     max_hunks = max(1, int(args.max_hunks))
-    visible = hunks[:max_hunks]
-    hidden = len(hunks) - len(visible)
+    context_lines = _resolve_review_start_context_lines(args)
+    page_size = _resolve_review_start_page_size(args)
     repo = f"{meta.ref.owner}/{meta.ref.name}"
+
+    focused_file: PullRequestDiffFile | None = None
+    focused_hunks: list[_DiffHunk] | None = None
+    diff_page = None
+    file_entries: list[tuple[int, PullRequestDiffFile, list[_DiffHunk]]] = []
+    total_hunks_on_page = 0
+    file_start = 0
+    file_end = 0
+    selected_file_indexes: list[int] | None = None
+
+    if path_filter is not None:
+        focused_file, focused_page, focused_index = _resolve_review_start_file(
+            client=client,
+            meta=meta,
+            path_filter=path_filter,
+        )
+        focused_hunks = _extract_diff_hunks_from_review_file(focused_file)
+        diff_page = focused_page
+        file_entries = [(focused_index, focused_file, focused_hunks)]
+        total_hunks_on_page = len(focused_hunks)
+        file_start = focused_index
+        file_end = focused_index
+    elif file_selection_raw is not None:
+        selected_file_indexes = _resolve_review_start_file_indexes(
+            raw=file_selection_raw,
+            total_files=(meta.changed_files or 0),
+        )
+        selected_files = _fetch_review_start_files_by_index(
+            client=client,
+            meta=meta,
+            file_indexes=selected_file_indexes,
+        )
+        diff_page = PullRequestDiffPage(
+            page=1,
+            page_size=len(selected_files),
+            total_files=(meta.changed_files or len(selected_files)),
+            total_pages=1,
+            files=tuple(file for _, file in selected_files),
+        )
+        file_entries = [
+            (file_index, file, _extract_diff_hunks_from_review_file(file)) for file_index, file in selected_files
+        ]
+        total_hunks_on_page = sum(len(hunks) for _, _, hunks in file_entries)
+        file_start = selected_file_indexes[0]
+        file_end = selected_file_indexes[-1]
+    else:
+        page = _resolve_review_start_page(args)
+        diff_page = client.fetch_pr_files_page(meta, page=page, page_size=page_size)
+        file_entries = [
+            (file_start_index, file, _extract_diff_hunks_from_review_file(file))
+            for file_start_index, file in enumerate(
+                diff_page.files,
+                start=((diff_page.page - 1) * diff_page.page_size) + 1,
+            )
+        ]
+        total_hunks_on_page = sum(len(hunks) for _, _, hunks in file_entries)
+        file_start = (
+            ((diff_page.page - 1) * diff_page.page_size) + 1 if diff_page.total_files > 0 and diff_page.files else 0
+        )
+        file_end = file_start + len(diff_page.files) - 1 if diff_page.files else 0
 
     print("## Review Start")
     print(f"PR: {meta.ref.number} ({repo})")
-    print(f"Total hunks: {len(hunks)}")
+    if pinned_head is not None:
+        print(f"Head snapshot: {pinned_head}")
+    print(f"Files changed: {diff_page.total_files}")
+    if path_filter is not None and focused_file is not None:
+        print(f"Focused file: {focused_file.path} ({file_start}/{diff_page.total_files})")
+    elif selected_file_indexes is not None:
+        print(f"Selected files: {_format_line_spans(selected_file_indexes)} of {diff_page.total_files}")
+    else:
+        if diff_page.files:
+            print(
+                f"File page: {diff_page.page}/{diff_page.total_pages} ({file_start}-{file_end} of {diff_page.total_files})"
+            )
+        else:
+            print(f"File page: {diff_page.page}/{diff_page.total_pages}")
+    print(f"Hunks on this page: {total_hunks_on_page}")
+    if context_lines > 0:
+        print(f"Extra context lines: {context_lines}")
     print(f"Δ full diff: `gh pr diff {meta.ref.number} --repo {repo}`")
+    head_flag = f" --head {pinned_head}" if pinned_head is not None else ""
     comment_template_cmd = display_command_with(
-        f"pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
+        f"pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>'{head_flag} --pr {meta.ref.number} --repo {repo}"
     )
     suggestion_template_cmd = display_command_with(
-        f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
+        f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>'{head_flag} --pr {meta.ref.number} --repo {repo}"
     )
     range_template_cmd = display_command_with(
-        f"pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
+        f"pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body '<review_comment>'{head_flag} --pr {meta.ref.number} --repo {repo}"
     )
     print(f"Comment template: `{comment_template_cmd}`")
     print(f"Suggestion template: `{suggestion_template_cmd}`")
     print(f"Multi-line template: `{range_template_cmd}`")
     print()
 
-    if not visible:
-        print("(no diff hunks found)")
+    if not diff_page.files:
+        print("(no changed files found)")
         return 0
 
-    for idx, hunk in enumerate(visible, start=1):
-        print(f"### Hunk {idx}")
-        print(f"File: {hunk.path}")
-        print(f"Header: {hunk.header}")
-        left_span_preview = _format_line_spans(sorted(hunk.left_commentable_lines))
-        right_span_preview = _format_line_spans(sorted(hunk.right_commentable_lines))
-        print(f"LEFT commentable span(s): {left_span_preview}")
-        print(f"RIGHT commentable span(s): {right_span_preview}")
-        print("Use the L#### / R#### labels from the numbered diff below as --line values.")
-        print("For a continuous multi-line range on the same side, add --start-line <start_line>.")
-        print("```text")
-        for line in _render_numbered_hunk_lines(hunk):
-            print(line)
-        print("```")
+    thread_summaries = client.fetch_review_thread_summaries(meta.ref)
+    if thread_summaries:
+        thread_template_cmd = display_command_with(f"pr thread-expand <thread_id> --pr {meta.ref.number} --repo {repo}")
+        print(f"Thread detail: `{thread_template_cmd}`")
         print()
 
-    if hidden > 0:
-        print(f"... {hidden} hunks hidden by --max-hunks")
+    thread_summaries_by_path = _group_review_thread_summaries_by_path(thread_summaries)
+    remaining_hunks = max_hunks
+    rendered_hunks = 0
+    for file_index, file, hunks in file_entries:
+        if remaining_hunks <= 0:
+            break
+        file_snapshot_lines = _load_review_start_file_snapshot_lines(
+            client=client,
+            meta=meta,
+            file=file,
+            context_lines=context_lines,
+        )
+        print(f"### File {file_index}/{diff_page.total_files}: {file.path}")
+        print(f"Status: {_format_review_file_status(file)}")
+        if file.previous_path and file.previous_path != file.path:
+            print(f"Previous path: {file.previous_path}")
+        file_thread_summaries = _resolve_review_start_thread_summaries_for_file(
+            file=file,
+            summaries_by_path=thread_summaries_by_path,
+        )
+        if file_thread_summaries:
+            print(_format_review_thread_file_summary(file_thread_summaries))
+            file_scoped_summaries = [
+                summary for summary in file_thread_summaries if _is_file_scoped_thread_summary(summary)
+            ]
+            if file_scoped_summaries:
+                print("File-scoped review threads:")
+                for line in _render_review_thread_summary_items(file_scoped_summaries):
+                    print(line)
+        if not file.patch:
+            print("(no patch preview available from GitHub API for this file)")
+            print()
+            continue
+        print(f"Hunks: {len(hunks)}")
+        if not hunks:
+            print("(no diff hunks parsed from this file patch)")
+            print()
+            continue
+        hunk_indexes = _resolve_review_start_hunk_indexes(
+            raw=hunk_selection_raw,
+            total_hunks=len(hunks),
+        )
+        visible_hunks = (
+            [hunks[index - 1] for index in hunk_indexes] if hunk_indexes is not None else hunks[:remaining_hunks]
+        )
+        for hunk_index, hunk in enumerate(visible_hunks, start=1):
+            display_hunk_index = hunk_indexes[hunk_index - 1] if hunk_indexes is not None else hunk_index
+            print(f"#### Hunk {display_hunk_index}")
+            print(f"Header: {hunk.header}")
+            left_span_preview = _format_line_spans(sorted(hunk.left_commentable_lines))
+            right_span_preview = _format_line_spans(sorted(hunk.right_commentable_lines))
+            print(f"LEFT commentable span(s): {left_span_preview}")
+            print(f"RIGHT commentable span(s): {right_span_preview}")
+            related_thread_summaries = _resolve_review_start_thread_summaries_for_hunk(
+                hunk=hunk,
+                summaries=file_thread_summaries,
+            )
+            if related_thread_summaries:
+                print("Related review threads in this hunk:")
+                for line in _render_review_thread_summary_items(related_thread_summaries):
+                    print(line)
+            print("Use the L#### / R#### labels from the numbered diff below as --line values.")
+            print("For a continuous multi-line range on the same side, add --start-line <start_line>.")
+            print("```text")
+            for line in _render_numbered_hunk_lines(
+                hunk,
+                extra_context_lines=_build_review_start_hunk_context_lines(
+                    hunk=hunk,
+                    file=file,
+                    snapshot_lines=file_snapshot_lines,
+                    context_lines=context_lines,
+                ),
+            ):
+                print(line)
+            print("```")
+            print()
+        rendered_hunks += len(visible_hunks)
+        if hunk_indexes is None:
+            remaining_hunks -= len(visible_hunks)
+
+    hidden_hunks = total_hunks_on_page - rendered_hunks
+    if hidden_hunks > 0 and hunk_selection_raw is None:
+        rerun_cmd = display_command_with(
+            _build_review_start_command(
+                meta=meta,
+                page=(None if path_filter is not None else diff_page.page),
+                page_size=page_size,
+                max_hunks=total_hunks_on_page,
+                head=pinned_head,
+                context_lines=context_lines,
+                files=file_selection_raw,
+                path=path_filter,
+                hunks=hunk_selection_raw,
+            )
+        )
+        print(f"... {hidden_hunks} hunks hidden on this page by --max-hunks")
+        print(f"⏎ rerun this page with a larger hunk cap: `{rerun_cmd}`")
+        print()
+
+    previous_page_cmd = None
+    next_page_cmd = None
+    previous_files_cmd = None
+    next_files_cmd = None
+    if selected_file_indexes is not None:
+        previous_files_cmd, next_files_cmd = _review_start_file_selection_commands(
+            meta=meta,
+            file_indexes=selected_file_indexes,
+            max_hunks=max_hunks,
+            head=pinned_head,
+            context_lines=context_lines,
+        )
+    elif path_filter is None:
+        previous_page_cmd = _review_start_page_command(
+            meta=meta,
+            page=(diff_page.page - 1) if diff_page.page > 1 else None,
+            page_size=page_size,
+            max_hunks=max_hunks,
+            head=pinned_head,
+            context_lines=context_lines,
+        )
+        next_page_cmd = _review_start_page_command(
+            meta=meta,
+            page=(diff_page.page + 1) if diff_page.page < diff_page.total_pages else None,
+            page_size=page_size,
+            max_hunks=max_hunks,
+            head=pinned_head,
+            context_lines=context_lines,
+        )
+    if (
+        previous_files_cmd is not None
+        or next_files_cmd is not None
+        or previous_page_cmd is not None
+        or next_page_cmd is not None
+    ):
+        print("---")
+        if previous_files_cmd is not None:
+            print(f"⏎ previous file selection: `{previous_files_cmd}`")
+        if next_files_cmd is not None:
+            print(f"⏎ next file selection: `{next_files_cmd}`")
+        if previous_page_cmd is not None:
+            print(f"⏎ previous file page: `{previous_page_cmd}`")
+        if next_page_cmd is not None:
+            print(f"⏎ next file page: `{next_page_cmd}`")
+        print("---")
     return 0
 
 
 def cmd_pr_review_comment(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_pr_head_snapshot(meta=meta, requested_head=_resolve_requested_head(args))
     start_line = _resolve_start_line(args)
     start_side = _resolve_start_side(args)
     _validate_review_thread_target(
@@ -704,6 +961,7 @@ def cmd_pr_review_comment(args: Any) -> int:
 def cmd_pr_review_suggest(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
+    _validate_pr_head_snapshot(meta=meta, requested_head=_resolve_requested_head(args))
     start_line = _resolve_start_line(args)
     start_side = _resolve_start_side(args)
     _validate_review_thread_target(
@@ -903,7 +1161,15 @@ class _DiffHunk:
 _HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 
 
-def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
+def _render_numbered_hunk_lines(
+    hunk: _DiffHunk,
+    *,
+    extra_context_lines: tuple[
+        list[tuple[int | None, int | None, str]],
+        list[tuple[int | None, int | None, str]],
+    ]
+    | None = None,
+) -> list[str]:
     rendered = [hunk.header]
     match = _HUNK_HEADER_RE.match(hunk.header)
     old_line = int(match.group("old")) if match is not None else 1
@@ -913,6 +1179,14 @@ def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
         left_label = f"L{left:>4}" if left is not None else "L    "
         right_label = f"R{right:>4}" if right is not None else "R    "
         return f"{left_label} {right_label} | {raw}"
+
+    leading_extra_lines: list[tuple[int | None, int | None, str]] = []
+    trailing_extra_lines: list[tuple[int | None, int | None, str]] = []
+    if extra_context_lines is not None:
+        leading_extra_lines, trailing_extra_lines = extra_context_lines
+
+    for left, right, raw in leading_extra_lines:
+        rendered.append(format_line(left, right, raw))
 
     for raw in hunk.lines[1:]:
         marker = raw[:1]
@@ -928,7 +1202,43 @@ def _render_numbered_hunk_lines(hunk: _DiffHunk) -> list[str]:
             old_line += 1
         else:
             rendered.append(f"            | {raw}")
+
+    for left, right, raw in trailing_extra_lines:
+        rendered.append(format_line(left, right, raw))
     return rendered
+
+
+def _extract_diff_hunks_from_review_file(file: PullRequestDiffFile) -> list[_DiffHunk]:
+    diff = _synthesize_diff_for_review_file(file)
+    if diff is None:
+        return []
+    return _extract_diff_hunks(diff)
+
+
+def _synthesize_diff_for_review_file(file: PullRequestDiffFile) -> str | None:
+    patch = (file.patch or "").strip("\n")
+    if not patch:
+        return None
+
+    old_path = file.previous_path or file.path
+    if file.status == "added":
+        old_header = "--- /dev/null"
+        new_header = f"+++ b/{file.path}"
+    elif file.status == "removed":
+        old_header = f"--- a/{old_path}"
+        new_header = "+++ /dev/null"
+    else:
+        old_header = f"--- a/{old_path}"
+        new_header = f"+++ b/{file.path}"
+
+    return "\n".join(
+        [
+            f"diff --git a/{old_path} b/{file.path}",
+            old_header,
+            new_header,
+            patch,
+        ]
+    )
 
 
 def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
@@ -1030,6 +1340,501 @@ def _extract_diff_hunks(diff: str) -> list[_DiffHunk]:
 
     flush()
     return hunks
+
+
+def _resolve_review_start_page(args: Any) -> int:
+    raw = getattr(args, "page", None)
+    page = 1 if raw is None else int(raw)
+    if page < 1:
+        raise RuntimeError(f"invalid page {page}, expected >= 1")
+    return page
+
+
+def _resolve_review_start_page_size(args: Any) -> int:
+    page_size = int(getattr(args, "page_size", DEFAULT_REVIEW_START_FILE_PAGE_SIZE))
+    if page_size < 1 or page_size > 100:
+        raise RuntimeError(f"invalid page size {page_size}, expected in 1..100")
+    return page_size
+
+
+def _resolve_review_start_path(args: Any) -> str | None:
+    raw = getattr(args, "path", None)
+    if raw is None:
+        return None
+    path = str(raw).strip()
+    return path or None
+
+
+def _resolve_review_start_context_lines(args: Any) -> int:
+    value = int(getattr(args, "context_lines", 0))
+    if value < 0:
+        raise RuntimeError(f"invalid context line count {value}, expected >= 0")
+    return value
+
+
+def _resolve_review_start_files(args: Any) -> str | None:
+    raw = getattr(args, "files", None)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def _resolve_review_start_hunks(args: Any) -> str | None:
+    raw = getattr(args, "hunks", None)
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    return value or None
+
+
+def _resolve_requested_head(args: Any) -> str | None:
+    raw = getattr(args, "head", None)
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    return value or None
+
+
+def _validate_pr_head_snapshot(*, meta: PullRequestMeta, requested_head: str | None) -> str | None:
+    current_head = (meta.head_ref_oid or "").strip().lower() or None
+    if requested_head is None:
+        return current_head
+    if current_head is None:
+        raise RuntimeError("current pull request head sha is unavailable; cannot verify `--head`")
+    if current_head == requested_head or current_head.startswith(requested_head):
+        return current_head
+    repo = f"{meta.ref.owner}/{meta.ref.name}"
+    refresh_cmd = display_command_with(f"pr review-start --pr {meta.ref.number} --repo {repo}")
+    raise RuntimeError(
+        f"stale review snapshot: requested --head {requested_head}, current head is {current_head}. "
+        f"Rerun `{refresh_cmd}` to refresh the snapshot."
+    )
+
+
+def _resolve_1_based_index_selection(*, raw: str | None, total_items: int, item_name: str) -> list[int] | None:
+    if raw is None:
+        return None
+    if total_items < 1:
+        raise RuntimeError(f"no {item_name}s are available for selection")
+    selected: set[int] = set()
+    for token in [chunk.strip() for chunk in raw.split(",") if chunk.strip()]:
+        if "-" in token:
+            left, right = token.split("-", 1)
+            try:
+                start = int(left)
+                end = int(right)
+            except ValueError as error:
+                raise RuntimeError(f"invalid {item_name} range: {token}") from error
+            if start < 1 or end < 1 or start > end:
+                raise RuntimeError(f"invalid {item_name} range: {token}")
+            selected.update(range(start, end + 1))
+            continue
+        try:
+            value = int(token)
+        except ValueError as error:
+            raise RuntimeError(f"invalid {item_name} index: {token}") from error
+        if value < 1:
+            raise RuntimeError(f"invalid {item_name} index: {token}")
+        selected.add(value)
+    ordered = sorted(selected)
+    if not ordered:
+        raise RuntimeError(f"`--{item_name}s` did not select any {item_name}")
+    if ordered[-1] > total_items:
+        raise RuntimeError(f"invalid {item_name} index {ordered[-1]}, expected in 1..{total_items}")
+    return ordered
+
+
+def _resolve_review_start_file_indexes(*, raw: str | None, total_files: int) -> list[int]:
+    indexes = _resolve_1_based_index_selection(raw=raw, total_items=total_files, item_name="file")
+    if indexes is None:
+        raise RuntimeError("`--files` did not select any file")
+    return indexes
+
+
+def _resolve_review_start_hunk_indexes(*, raw: str | None, total_hunks: int) -> list[int] | None:
+    return _resolve_1_based_index_selection(raw=raw, total_items=total_hunks, item_name="hunk")
+
+
+def _format_review_file_status(file: PullRequestDiffFile) -> str:
+    return f"{file.status} (+{file.additions} -{file.deletions}, {file.changes} changes)"
+
+
+def _load_review_start_file_snapshot_lines(
+    *,
+    client: GitHubClient,
+    meta: PullRequestMeta,
+    file: PullRequestDiffFile,
+    context_lines: int,
+) -> tuple[str, ...] | None:
+    if context_lines <= 0:
+        return None
+    if file.status == "removed":
+        base_ref = meta.base_ref_oid
+        target_path = file.previous_path or file.path
+        if base_ref is None:
+            return None
+        return client.fetch_file_lines(meta.ref, path=target_path, revision=base_ref)
+    if file.status == "added":
+        return None
+    head_ref = meta.head_ref_oid
+    if head_ref is None:
+        return None
+    return client.fetch_file_lines(meta.ref, path=file.path, revision=head_ref)
+
+
+def _build_review_start_hunk_context_lines(
+    *,
+    hunk: _DiffHunk,
+    file: PullRequestDiffFile,
+    snapshot_lines: tuple[str, ...] | None,
+    context_lines: int,
+) -> tuple[list[tuple[int | None, int | None, str]], list[tuple[int | None, int | None, str]]] | None:
+    if context_lines <= 0 or snapshot_lines is None:
+        return None
+
+    match = _HUNK_HEADER_RE.match(hunk.header)
+    if match is None:
+        return None
+    old_start = int(match.group("old"))
+    new_start = int(match.group("new"))
+    old_cursor, new_cursor = _resolve_hunk_end_cursors(hunk, old_start=old_start, new_start=new_start)
+
+    if file.status == "removed":
+        return _build_left_only_review_context_lines(
+            snapshot_lines=snapshot_lines,
+            old_start=old_start,
+            old_cursor=old_cursor,
+            context_lines=context_lines,
+        )
+    if file.status == "added":
+        return None
+    return _build_both_side_review_context_lines(
+        snapshot_lines=snapshot_lines,
+        old_start=old_start,
+        new_start=new_start,
+        old_cursor=old_cursor,
+        new_cursor=new_cursor,
+        context_lines=context_lines,
+    )
+
+
+def _resolve_hunk_end_cursors(hunk: _DiffHunk, *, old_start: int, new_start: int) -> tuple[int, int]:
+    old_line = old_start
+    new_line = new_start
+    for raw in hunk.lines[1:]:
+        marker = raw[:1]
+        if marker == "+":
+            new_line += 1
+        elif marker == " ":
+            old_line += 1
+            new_line += 1
+        elif marker == "-":
+            old_line += 1
+    return old_line, new_line
+
+
+def _build_both_side_review_context_lines(
+    *,
+    snapshot_lines: tuple[str, ...],
+    old_start: int,
+    new_start: int,
+    old_cursor: int,
+    new_cursor: int,
+    context_lines: int,
+) -> tuple[list[tuple[int | None, int | None, str]], list[tuple[int | None, int | None, str]]]:
+    leading_count = min(context_lines, old_start - 1, new_start - 1)
+    trailing_count = min(context_lines, max(0, len(snapshot_lines) - new_cursor + 1))
+    leading: list[tuple[int | None, int | None, str]] = [
+        (
+            old_start - leading_count + offset,
+            new_start - leading_count + offset,
+            f" {snapshot_lines[new_start - leading_count + offset - 1]}",
+        )
+        for offset in range(leading_count)
+    ]
+    trailing: list[tuple[int | None, int | None, str]] = [
+        (
+            old_cursor + offset,
+            new_cursor + offset,
+            f" {snapshot_lines[new_cursor + offset - 1]}",
+        )
+        for offset in range(trailing_count)
+    ]
+    return leading, trailing
+
+
+def _build_left_only_review_context_lines(
+    *,
+    snapshot_lines: tuple[str, ...],
+    old_start: int,
+    old_cursor: int,
+    context_lines: int,
+) -> tuple[list[tuple[int | None, int | None, str]], list[tuple[int | None, int | None, str]]]:
+    leading_count = min(context_lines, old_start - 1)
+    trailing_count = min(context_lines, max(0, len(snapshot_lines) - old_cursor + 1))
+    leading: list[tuple[int | None, int | None, str]] = [
+        (
+            old_start - leading_count + offset,
+            None,
+            f" {snapshot_lines[old_start - leading_count + offset - 1]}",
+        )
+        for offset in range(leading_count)
+    ]
+    trailing: list[tuple[int | None, int | None, str]] = [
+        (
+            old_cursor + offset,
+            None,
+            f" {snapshot_lines[old_cursor + offset - 1]}",
+        )
+        for offset in range(trailing_count)
+    ]
+    return leading, trailing
+
+
+def _group_review_thread_summaries_by_path(
+    summaries: tuple[ReviewThreadSummary, ...],
+) -> dict[str, list[ReviewThreadSummary]]:
+    grouped: dict[str, list[ReviewThreadSummary]] = {}
+    for summary in summaries:
+        grouped.setdefault(summary.path, []).append(summary)
+    return grouped
+
+
+def _resolve_review_start_thread_summaries_for_file(
+    *,
+    file: PullRequestDiffFile,
+    summaries_by_path: dict[str, list[ReviewThreadSummary]],
+) -> list[ReviewThreadSummary]:
+    candidates: dict[str, ReviewThreadSummary] = {}
+    for path in {file.path, file.previous_path}:
+        if not path:
+            continue
+        for summary in summaries_by_path.get(path, []):
+            candidates[summary.thread_id] = summary
+    return sorted(candidates.values(), key=lambda summary: (summary.display_ref or "", summary.thread_id))
+
+
+def _resolve_review_start_thread_summaries_for_hunk(
+    *,
+    hunk: _DiffHunk,
+    summaries: list[ReviewThreadSummary],
+) -> list[ReviewThreadSummary]:
+    related: list[ReviewThreadSummary] = []
+    for summary in summaries:
+        if _is_file_scoped_thread_summary(summary):
+            continue
+        if set(summary.right_lines) & hunk.right_commentable_lines:
+            related.append(summary)
+            continue
+        if set(summary.left_lines) & hunk.left_commentable_lines:
+            related.append(summary)
+    return related
+
+
+def _format_review_thread_file_summary(summaries: list[ReviewThreadSummary]) -> str:
+    unresolved_count = sum(1 for summary in summaries if not summary.is_resolved)
+    resolved_count = len(summaries) - unresolved_count
+    return (
+        f"Existing review threads in this file: {len(summaries)} "
+        f"({unresolved_count} unresolved, {resolved_count} resolved)"
+    )
+
+
+def _is_file_scoped_thread_summary(summary: ReviewThreadSummary) -> bool:
+    return not summary.left_lines and not summary.right_lines
+
+
+def _render_review_thread_summary_items(summaries: list[ReviewThreadSummary]) -> list[str]:
+    return [f"- {_format_review_thread_summary_item(summary)}" for summary in summaries]
+
+
+def _format_review_thread_summary_item(summary: ReviewThreadSummary) -> str:
+    state = "resolved" if summary.is_resolved else "unresolved"
+    location = summary.display_ref or "file-scoped"
+    comment_label = "comment" if summary.comment_count == 1 else "comments"
+    return f"{state} {summary.thread_id} at {location} ({summary.comment_count} {comment_label})"
+
+
+def _review_start_page_command(
+    *,
+    meta: PullRequestMeta,
+    page: int | None,
+    page_size: int,
+    max_hunks: int,
+    head: str | None,
+    context_lines: int,
+) -> str | None:
+    if page is None:
+        return None
+    return display_command_with(
+        _build_review_start_command(
+            meta=meta,
+            page=page,
+            page_size=page_size,
+            max_hunks=max_hunks,
+            head=head,
+            context_lines=context_lines,
+            files=None,
+            path=None,
+            hunks=None,
+        )
+    )
+
+
+def _build_review_start_command(
+    *,
+    meta: PullRequestMeta,
+    page: int | None,
+    page_size: int,
+    max_hunks: int,
+    head: str | None,
+    context_lines: int,
+    files: str | None,
+    path: str | None,
+    hunks: str | None,
+) -> str:
+    repo = f"{meta.ref.owner}/{meta.ref.name}"
+    parts = ["pr", "review-start"]
+    if files is not None:
+        parts.extend(["--files", files])
+    elif page is not None:
+        parts.extend(["--page", str(page)])
+        parts.extend(["--page-size", str(page_size)])
+    parts.extend(["--max-hunks", str(max_hunks)])
+    if path is not None:
+        parts.extend(["--path", path])
+    if hunks is not None:
+        parts.extend(["--hunks", hunks])
+    if head is not None:
+        parts.extend(["--head", head])
+    if context_lines > 0:
+        parts.extend(["--context-lines", str(context_lines)])
+    parts.extend(["--pr", str(meta.ref.number), "--repo", repo])
+    return " ".join(parts)
+
+
+def _fetch_review_start_files_by_index(
+    *,
+    client: GitHubClient,
+    meta: PullRequestMeta,
+    file_indexes: list[int],
+) -> list[tuple[int, PullRequestDiffFile]]:
+    fetch_page_size = 100
+    wanted = set(file_indexes)
+    files_by_index: dict[int, PullRequestDiffFile] = {}
+    needed_pages = sorted({((index - 1) // fetch_page_size) + 1 for index in file_indexes})
+    for page in needed_pages:
+        diff_page = client.fetch_pr_files_page(meta, page=page, page_size=fetch_page_size)
+        page_start = ((page - 1) * fetch_page_size) + 1 if diff_page.files else 0
+        for offset, file in enumerate(diff_page.files):
+            file_index = page_start + offset
+            if file_index in wanted:
+                files_by_index[file_index] = file
+    missing = [index for index in file_indexes if index not in files_by_index]
+    if missing:
+        raise RuntimeError(f"failed to load selected files: {_format_line_spans(missing)}")
+    return [(index, files_by_index[index]) for index in file_indexes]
+
+
+def _review_start_file_selection_commands(
+    *,
+    meta: PullRequestMeta,
+    file_indexes: list[int],
+    max_hunks: int,
+    head: str | None,
+    context_lines: int,
+) -> tuple[str | None, str | None]:
+    if not file_indexes or not _is_contiguous_index_selection(file_indexes):
+        return None, None
+    total_files = meta.changed_files or 0
+    width = len(file_indexes)
+    start = file_indexes[0]
+    end = file_indexes[-1]
+    previous_cmd = None
+    next_cmd = None
+    if start > 1:
+        previous_start = max(1, start - width)
+        previous_end = start - 1
+        previous_cmd = display_command_with(
+            _build_review_start_command(
+                meta=meta,
+                page=None,
+                page_size=DEFAULT_REVIEW_START_FILE_PAGE_SIZE,
+                max_hunks=max_hunks,
+                head=head,
+                context_lines=context_lines,
+                files=_format_range_selection(previous_start, previous_end),
+                path=None,
+                hunks=None,
+            )
+        )
+    if total_files > 0 and end < total_files:
+        next_start = end + 1
+        next_end = min(total_files, end + width)
+        next_cmd = display_command_with(
+            _build_review_start_command(
+                meta=meta,
+                page=None,
+                page_size=DEFAULT_REVIEW_START_FILE_PAGE_SIZE,
+                max_hunks=max_hunks,
+                head=head,
+                context_lines=context_lines,
+                files=_format_range_selection(next_start, next_end),
+                path=None,
+                hunks=None,
+            )
+        )
+    return previous_cmd, next_cmd
+
+
+def _is_contiguous_index_selection(indexes: list[int]) -> bool:
+    if not indexes:
+        return False
+    expected = list(range(indexes[0], indexes[-1] + 1))
+    return indexes == expected
+
+
+def _format_range_selection(start: int, end: int) -> str:
+    if start == end:
+        return str(start)
+    return f"{start}-{end}"
+
+
+def _resolve_review_start_file(
+    *,
+    client: GitHubClient,
+    meta: PullRequestMeta,
+    path_filter: str,
+) -> tuple[PullRequestDiffFile, PullRequestDiffPage, int]:
+    page_size = 100
+    total_files = meta.changed_files or 0
+    total_pages = max(1, (total_files + page_size - 1) // page_size) if total_files > 0 else 1
+    exact_match: tuple[PullRequestDiffFile, PullRequestDiffPage, int] | None = None
+    suffix_matches: list[tuple[PullRequestDiffFile, PullRequestDiffPage, int]] = []
+
+    for page in range(1, total_pages + 1):
+        diff_page = client.fetch_pr_files_page(meta, page=page, page_size=page_size)
+        file_start = ((page - 1) * page_size) + 1 if diff_page.files else 0
+        for offset, file in enumerate(diff_page.files):
+            file_index = file_start + offset
+            if file.path == path_filter:
+                exact_match = (file, diff_page, file_index)
+                break
+            if file.path.endswith(path_filter) or file.path.endswith(f"/{path_filter}"):
+                suffix_matches.append((file, diff_page, file_index))
+        if exact_match is not None:
+            break
+
+    if exact_match is not None:
+        return exact_match
+    if len(suffix_matches) == 1:
+        return suffix_matches[0]
+    if len(suffix_matches) > 1:
+        preview = ", ".join(file.path for file, _, _ in suffix_matches[:5])
+        more = " ..." if len(suffix_matches) > 5 else ""
+        raise RuntimeError(f"ambiguous --path {path_filter!r}; matches: {preview}{more}")
+    raise RuntimeError(f"changed file not found for --path {path_filter!r}")
 
 
 def _resolve_start_line(args: Any) -> int | None:
