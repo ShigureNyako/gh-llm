@@ -727,7 +727,7 @@ def test_extract_diff_hunks_prefers_first_added_line_for_right_side() -> None:
         ]
     )
 
-    hunks = pr_commands._extract_diff_hunks(diff)
+    hunks = pr_commands._extract_diff_hunks(diff)  # pyright: ignore[reportPrivateUsage]
 
     assert len(hunks) == 1
     assert hunks[0].path == "paddle/phi/kernels/funcs/abs.h"
