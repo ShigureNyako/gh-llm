@@ -19,6 +19,7 @@ from gh_llm.models import (
     PullRequestDiffPage,
     PullRequestMeta,
     PullRequestRef,
+    ReviewCommentSummary,
     ReviewThreadSummary,
     TimelineEvent,
     TimelinePage,
@@ -1030,15 +1031,20 @@ class GitHubClient:
                 continue
             right_lines = _collect_thread_lines(comments, keys=("startLine", "line"))
             left_lines = _collect_thread_lines(comments, keys=("originalStartLine", "originalLine"))
+            anchor_side, anchor_line = _resolve_review_thread_anchor(comments)
             summaries.append(
                 ReviewThreadSummary(
                     thread_id=thread_id,
                     path=path,
                     is_resolved=bool(thread.get("isResolved")),
                     comment_count=len(comments),
+                    is_outdated=_is_review_thread_outdated(comments),
+                    anchor_side=anchor_side,
+                    anchor_line=anchor_line,
                     right_lines=right_lines,
                     left_lines=left_lines,
                     display_ref=_format_thread_summary_display_ref(right_lines=right_lines, left_lines=left_lines),
+                    comments=tuple(_build_review_comment_summaries(comments)),
                 )
             )
         return tuple(summaries)
@@ -1671,6 +1677,72 @@ def _format_thread_summary_span(prefix: str, lines: tuple[int, ...]) -> str:
     if len(lines) == 1:
         return f"{prefix}{lines[0]}"
     return f"{prefix}{lines[0]}-{lines[-1]}"
+
+
+def _build_review_comment_summaries(comments: list[dict[str, object]]) -> list[ReviewCommentSummary]:
+    summaries: list[ReviewCommentSummary] = []
+    for comment in comments:
+        summaries.append(
+            ReviewCommentSummary(
+                comment_id=_as_optional_str(comment.get("id")) or "",
+                author=_get_login(comment.get("author")),
+                body_preview=_build_review_comment_preview(comment),
+                is_outdated=bool(comment.get("outdated")) or bool(comment.get("isOutdated")),
+                is_minimized=bool(comment.get("isMinimized")),
+                minimized_reason=_as_optional_str(comment.get("minimizedReason")),
+            )
+        )
+    return summaries
+
+
+def _is_review_thread_outdated(comments: list[dict[str, object]]) -> bool:
+    return bool(comments) and all(
+        bool(comment.get("outdated")) or bool(comment.get("isOutdated")) for comment in comments
+    )
+
+
+def _resolve_review_thread_anchor(comments: list[dict[str, object]]) -> tuple[str | None, int | None]:
+    for comment in comments:
+        start_line = _as_optional_int(comment.get("startLine"))
+        line = _as_optional_int(comment.get("line"))
+        if start_line is not None and start_line > 0:
+            return "RIGHT", start_line
+        if line is not None and line > 0:
+            return "RIGHT", line
+        original_start_line = _as_optional_int(comment.get("originalStartLine"))
+        original_line = _as_optional_int(comment.get("originalLine"))
+        if original_start_line is not None and original_start_line > 0:
+            return "LEFT", original_start_line
+        if original_line is not None and original_line > 0:
+            return "LEFT", original_line
+    return None, None
+
+
+def _build_review_comment_preview(comment: dict[str, object]) -> str:
+    if bool(comment.get("isMinimized")):
+        reason = (_as_optional_str(comment.get("minimizedReason")) or "minimized").lower()
+        return f"(hidden comment: {reason})"
+
+    body = _as_optional_str(comment.get("body")) or ""
+    plain_body = _strip_suggestion_blocks(body)
+    plain_lines = [" ".join(line.strip().split()) for line in plain_body.splitlines() if line.strip()]
+    suggestion_lines = [" ".join(line.strip().split()) for line in _extract_suggestion_lines(body) if line.strip()]
+
+    preview = "(no comment body)"
+    has_more = False
+    if plain_lines:
+        preview = plain_lines[0]
+        has_more = len(plain_lines) > 1 or bool(suggestion_lines)
+    elif suggestion_lines:
+        preview = f"suggestion: {suggestion_lines[0]}"
+        has_more = len(suggestion_lines) > 1
+
+    if has_more and not preview.endswith(" ..."):
+        preview = f"{preview} ..."
+
+    if len(preview) > 140:
+        preview = preview[:137].rstrip() + "..."
+    return preview
 
 
 def _run_graphql_connection(

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
 from gh_llm.commands import pr as pr_commands
+from gh_llm.models import ReviewThreadSummary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -794,6 +795,62 @@ def test_render_numbered_hunk_lines_preserves_real_right_side_line_numbers() -> 
     assert "L     R 893 | +    current_right_display_line = 0" in rendered
 
 
+def test_inline_review_thread_blocks_do_not_fallback_from_current_right_anchor_to_original_left_line() -> None:
+    current_hunk = pr_commands._DiffHunk(  # pyright: ignore[reportPrivateUsage]
+        path="paddle/phi/api/include/compat/ATen/ops/from_blob.h",
+        header="@@ -18,3 +80,4 @@",
+        anchor_line=81,
+        lines=[
+            "@@ -18,3 +80,4 @@",
+            " context_before()",
+            '+    PD_CHECK(storage_offset_.value() == 0, "storage_offset` should be zero.");',
+            " context_after()",
+        ],
+        left_commentable_lines={18, 19},
+        right_commentable_lines={80, 81, 82},
+        match_paths={"paddle/phi/api/include/compat/ATen/ops/from_blob.h"},
+    )
+    stale_hunk = pr_commands._DiffHunk(  # pyright: ignore[reportPrivateUsage]
+        path="paddle/phi/api/include/compat/ATen/ops/from_blob.h",
+        header="@@ -80,4 +210,1 @@",
+        anchor_line=210,
+        lines=[
+            "@@ -80,4 +210,1 @@",
+            "-      sizes._PD_ToPaddleIntArray(),",
+            "-      compat::_PD_AtenScalarTypeToPhiDataType(options.dtype()),",
+            "-      phi::DataLayout::NCHW,",
+            "-      options._PD_GetPlace());",
+            "+  return for_blob(data, sizes).options(options).make_tensor();",
+        ],
+        left_commentable_lines={80, 81, 82, 83},
+        right_commentable_lines={210},
+        match_paths={"paddle/phi/api/include/compat/ATen/ops/from_blob.h"},
+    )
+    summary = ReviewThreadSummary(
+        thread_id="PRRT_mock_current",
+        path="paddle/phi/api/include/compat/ATen/ops/from_blob.h",
+        is_resolved=False,
+        comment_count=1,
+        is_outdated=False,
+        anchor_side="RIGHT",
+        anchor_line=81,
+        right_lines=(81,),
+        left_lines=(81,),
+        display_ref="R81",
+        comments=(),
+    )
+
+    blocks_by_hunk = pr_commands._build_inline_review_thread_blocks_for_file(  # pyright: ignore[reportPrivateUsage]
+        hunks=[current_hunk, stale_hunk],
+        summaries=[summary],
+        extra_contexts=[None, None],
+    )
+
+    assert ("RIGHT", 81) in blocks_by_hunk[0]
+    assert "💬 thread PRRT_mock_current at R81 (1 comment)" in blocks_by_hunk[0][("RIGHT", 81)]
+    assert blocks_by_hunk[1] == {}
+
+
 def test_pr_review_actions_for_llm_flow(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -826,7 +883,7 @@ def test_pr_review_actions_for_llm_flow(
     assert "gh-llm pr thread-expand <thread_id> --pr 77928 --repo PaddlePaddle/Paddle" in out
     assert "### File 1/1: python/test_file.py" in out
     assert "Status: modified (+1 -1, 2 changes)" in out
-    assert "Existing review threads in this file: 2 (1 unresolved, 1 resolved)" in out
+    assert "Existing review threads in this file: 2 (1 active, 1 resolved)" in out
     assert "LEFT commentable span(s): 20" in out
     assert "RIGHT commentable span(s): 20" in out
     assert "Related review threads in this hunk:" not in out
@@ -945,10 +1002,13 @@ def test_pr_review_start_shows_numbered_right_side_lines(
     code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "Existing review threads in this file: 2 (1 unresolved, 1 resolved)" in out
-    assert "Related review threads in this hunk:" in out
-    assert "- unresolved PRRT_mock_1 at R21-23 (2 comments)" in out
-    assert "- resolved PRRT_mock_2 at R22 (1 comment)" in out
+    assert "Existing review threads in this file: 2 (1 active, 1 resolved)" in out
+    assert "Related review threads in this hunk:" not in out
+    assert "            ┆ 💬 thread PRRT_mock_1 at R21-23 (2 comments)" in out
+    assert "            ┆ ↳ [1] @reviewer: use clear variable names" in out
+    assert "            ┆ ↳ [2] @ShigureNyako [outdated]: self reply" in out
+    assert "            ┆ ✓ resolved thread PRRT_mock_2 at R22 (1 comment)" in out
+    assert "            ┆ ↳ [1] @reviewer: The error message could be more helpful. ..." in out
     assert "LEFT commentable span(s): 20-21" in out
     assert "RIGHT commentable span(s): 20-22" in out
     assert "L  20 R  20 |  context_before()" in out
@@ -987,6 +1047,110 @@ def test_pr_review_start_supports_extra_context_lines(
     assert "L  19 R  19 |  before_api()" in out
     assert "L     R  20 | +new_api_call()" in out
     assert "L  21 R  21 |  after_api()" in out
+
+
+def test_pr_review_start_auto_shows_nearby_current_threads_and_hides_stale_outdated_threads(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    head_lines = [f"line_{index}" for index in range(1, 26)]
+    head_lines[18] = "before_api()"
+    head_lines[19] = "new_api_call()"
+    head_lines[20] = "after_api()"
+
+    def run_with_context_threads(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents/" in cmd[2]:
+            payload = {
+                "type": "file",
+                "encoding": "base64",
+                "content": base64.b64encode("\n".join(head_lines).encode("utf-8")).decode("ascii"),
+            }
+            return FakeCompletedProcess(json.dumps(payload))
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            query = _extract_form(cmd, "query")
+            if "reviewThreads(first:100" in query:
+                return FakeCompletedProcess(
+                    json.dumps(
+                        {
+                            "data": {
+                                "repository": {
+                                    "pullRequest": {
+                                        "reviewThreads": {
+                                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                            "nodes": [
+                                                {
+                                                    "id": "PRRT_current_context",
+                                                    "isResolved": False,
+                                                    "comments": {
+                                                        "nodes": [
+                                                            {
+                                                                "id": "rc_context",
+                                                                "path": "python/test_file.py",
+                                                                "body": "current context thread",
+                                                                "line": 19,
+                                                                "originalLine": 19,
+                                                                "startLine": None,
+                                                                "originalStartLine": None,
+                                                                "diffHunk": "@@ -20,3 +20,4 @@ def demo():\n context_before()\n+new_api_call()\n context_after()",
+                                                                "createdAt": "2026-02-14T14:50:01Z",
+                                                                "outdated": True,
+                                                                "isMinimized": False,
+                                                                "minimizedReason": None,
+                                                                "author": {"login": "reviewer"},
+                                                                "reactionGroups": [],
+                                                                "pullRequestReview": {"id": "PRR_mock"},
+                                                            }
+                                                        ]
+                                                    },
+                                                },
+                                                {
+                                                    "id": "PRRT_outdated_context",
+                                                    "isResolved": False,
+                                                    "comments": {
+                                                        "nodes": [
+                                                            {
+                                                                "id": "rc_outdated",
+                                                                "path": "python/test_file.py",
+                                                                "body": "outdated context thread",
+                                                                "line": None,
+                                                                "originalLine": 19,
+                                                                "startLine": None,
+                                                                "originalStartLine": None,
+                                                                "diffHunk": "@@ -20,3 +20,4 @@ def demo():\n context_before()\n+new_api_call()\n context_after()",
+                                                                "createdAt": "2026-02-14T14:50:02Z",
+                                                                "outdated": True,
+                                                                "isMinimized": False,
+                                                                "minimizedReason": None,
+                                                                "author": {"login": "reviewer"},
+                                                                "reactionGroups": [],
+                                                                "pullRequestReview": {"id": "PRR_mock"},
+                                                            }
+                                                        ]
+                                                    },
+                                                },
+                                            ],
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    )
+                )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_context_threads)
+
+    code = cli.run(["pr", "review-start", "--pr", "77928", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Existing review threads in this file: 1 (1 active)" in out
+    assert "PRRT_outdated_context" not in out
+    assert "L  19 R  19 |  before_api()" in out
+    assert "            ┆ 💬 thread PRRT_current_context at R19 (1 comment)" in out
+    assert "            ┆ ↳ [1] @reviewer [outdated]: current context thread" in out
 
 
 def test_pr_review_start_supports_changed_file_pagination(

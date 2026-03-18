@@ -116,14 +116,28 @@ class PullRequestDiffPage:
 
 
 @dataclass(frozen=True)
+class ReviewCommentSummary:
+    comment_id: str
+    author: str
+    body_preview: str
+    is_outdated: bool = False
+    is_minimized: bool = False
+    minimized_reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ReviewThreadSummary:
     thread_id: str
     path: str
     is_resolved: bool
     comment_count: int
+    is_outdated: bool = False
+    anchor_side: str | None = None
+    anchor_line: int | None = None
     right_lines: tuple[int, ...] = ()
     left_lines: tuple[int, ...] = ()
     display_ref: str | None = None
+    comments: tuple[ReviewCommentSummary, ...] = ()
 
 
 @dataclass

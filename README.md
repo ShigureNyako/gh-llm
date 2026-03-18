@@ -159,7 +159,7 @@ gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --path 'TensorBody.
 gh-llm pr review-start --pr 78255 --repo PaddlePaddle/Paddle --page 2 --page-size 5 --head <head_sha>
 ```
 
-It prints changed-file page summary, lightweight existing review-thread summaries for the current file/hunk, per-hunk commentable LEFT/RIGHT line ranges, numbered diff lines, and ready-to-run comment/suggestion commands.
+It prints changed-file page summary, existing review-thread summaries with lightweight comment previews inline on matching diff lines when possible, per-hunk commentable LEFT/RIGHT line ranges, numbered diff lines, and ready-to-run comment/suggestion commands.
 Generated follow-up commands reuse `--head <head_sha>` automatically so pagination and inline review commands stay on the same PR snapshot; stale snapshots are rejected with a refresh hint.
 Use `--context-lines <n>` when the GitHub patch hunk is too tight and you need a small amount of extra unchanged code around it.
 

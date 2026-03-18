@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 DEFAULT_DIFF_HUNK_LINES = 12
 DEFAULT_REVIEW_START_FILE_PAGE_SIZE = 5
+DEFAULT_NEARBY_THREAD_AUTO_CONTEXT_LINES = 3
 
 
 @dataclass(frozen=True)
@@ -786,19 +787,15 @@ def cmd_pr_review_start(args: Any) -> int:
     for file_index, file, hunks in file_entries:
         if remaining_hunks <= 0:
             break
-        file_snapshot_lines = _load_review_start_file_snapshot_lines(
-            client=client,
-            meta=meta,
-            file=file,
-            context_lines=context_lines,
-        )
         print(f"### File {file_index}/{diff_page.total_files}: {file.path}")
         print(f"Status: {_format_review_file_status(file)}")
         if file.previous_path and file.previous_path != file.path:
             print(f"Previous path: {file.previous_path}")
-        file_thread_summaries = _resolve_review_start_thread_summaries_for_file(
-            file=file,
-            summaries_by_path=thread_summaries_by_path,
+        file_thread_summaries = _filter_review_start_thread_summaries(
+            _resolve_review_start_thread_summaries_for_file(
+                file=file,
+                summaries_by_path=thread_summaries_by_path,
+            )
         )
         if file_thread_summaries:
             print(_format_review_thread_file_summary(file_thread_summaries))
@@ -825,6 +822,36 @@ def cmd_pr_review_start(args: Any) -> int:
         visible_hunks = (
             [hunks[index - 1] for index in hunk_indexes] if hunk_indexes is not None else hunks[:remaining_hunks]
         )
+        effective_context_lines_by_hunk = [
+            max(
+                context_lines,
+                _resolve_nearby_thread_context_lines(
+                    hunk=hunk,
+                    summaries=file_thread_summaries,
+                ),
+            )
+            for hunk in visible_hunks
+        ]
+        file_snapshot_lines = _load_review_start_file_snapshot_lines(
+            client=client,
+            meta=meta,
+            file=file,
+            context_lines=max(effective_context_lines_by_hunk, default=context_lines),
+        )
+        extra_contexts = [
+            _build_review_start_hunk_context_lines(
+                hunk=hunk,
+                file=file,
+                snapshot_lines=file_snapshot_lines,
+                context_lines=effective_context_lines_by_hunk[index],
+            )
+            for index, hunk in enumerate(visible_hunks)
+        ]
+        inline_thread_blocks_by_hunk = _build_inline_review_thread_blocks_for_file(
+            hunks=visible_hunks,
+            summaries=file_thread_summaries,
+            extra_contexts=extra_contexts,
+        )
         for hunk_index, hunk in enumerate(visible_hunks, start=1):
             display_hunk_index = hunk_indexes[hunk_index - 1] if hunk_indexes is not None else hunk_index
             print(f"#### Hunk {display_hunk_index}")
@@ -833,25 +860,15 @@ def cmd_pr_review_start(args: Any) -> int:
             right_span_preview = _format_line_spans(sorted(hunk.right_commentable_lines))
             print(f"LEFT commentable span(s): {left_span_preview}")
             print(f"RIGHT commentable span(s): {right_span_preview}")
-            related_thread_summaries = _resolve_review_start_thread_summaries_for_hunk(
-                hunk=hunk,
-                summaries=file_thread_summaries,
-            )
-            if related_thread_summaries:
-                print("Related review threads in this hunk:")
-                for line in _render_review_thread_summary_items(related_thread_summaries):
-                    print(line)
+            extra_context = extra_contexts[hunk_index - 1]
+            inline_thread_blocks = inline_thread_blocks_by_hunk[hunk_index - 1]
             print("Use the L#### / R#### labels from the numbered diff below as --line values.")
             print("For a continuous multi-line range on the same side, add --start-line <start_line>.")
             print("```text")
             for line in _render_numbered_hunk_lines(
                 hunk,
-                extra_context_lines=_build_review_start_hunk_context_lines(
-                    hunk=hunk,
-                    file=file,
-                    snapshot_lines=file_snapshot_lines,
-                    context_lines=context_lines,
-                ),
+                extra_context_lines=extra_context,
+                inline_thread_blocks=inline_thread_blocks,
             ):
                 print(line)
             print("```")
@@ -1169,6 +1186,7 @@ def _render_numbered_hunk_lines(
         list[tuple[int | None, int | None, str]],
     ]
     | None = None,
+    inline_thread_blocks: dict[tuple[str, int], list[str]] | None = None,
 ) -> list[str]:
     rendered = [hunk.header]
     match = _HUNK_HEADER_RE.match(hunk.header)
@@ -1185,26 +1203,42 @@ def _render_numbered_hunk_lines(
     if extra_context_lines is not None:
         leading_extra_lines, trailing_extra_lines = extra_context_lines
 
+    def append_annotations(left: int | None, right: int | None) -> None:
+        if not inline_thread_blocks:
+            return
+        seen: set[tuple[str, int]] = set()
+        for key in ((("LEFT", left) if left is not None else None), (("RIGHT", right) if right is not None else None)):
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            for line in inline_thread_blocks.get(key, []):
+                rendered.append(f"            ┆ {line}")
+
     for left, right, raw in leading_extra_lines:
         rendered.append(format_line(left, right, raw))
+        append_annotations(left, right)
 
     for raw in hunk.lines[1:]:
         marker = raw[:1]
         if marker == "+":
             rendered.append(format_line(None, new_line, raw))
+            append_annotations(None, new_line)
             new_line += 1
         elif marker == " ":
             rendered.append(format_line(old_line, new_line, raw))
+            append_annotations(old_line, new_line)
             old_line += 1
             new_line += 1
         elif marker == "-":
             rendered.append(format_line(old_line, None, raw))
+            append_annotations(old_line, None)
             old_line += 1
         else:
             rendered.append(f"            | {raw}")
 
     for left, right, raw in trailing_extra_lines:
         rendered.append(format_line(left, right, raw))
+        append_annotations(left, right)
     return rendered
 
 
@@ -1564,6 +1598,67 @@ def _build_both_side_review_context_lines(
     return leading, trailing
 
 
+def _resolve_nearby_thread_context_lines(
+    *,
+    hunk: _DiffHunk,
+    summaries: list[ReviewThreadSummary],
+    max_auto_context_lines: int = DEFAULT_NEARBY_THREAD_AUTO_CONTEXT_LINES,
+) -> int:
+    if max_auto_context_lines <= 0:
+        return 0
+    match = _HUNK_HEADER_RE.match(hunk.header)
+    if match is None:
+        return 0
+    old_start = int(match.group("old"))
+    new_start = int(match.group("new"))
+    old_cursor, new_cursor = _resolve_hunk_end_cursors(hunk, old_start=old_start, new_start=new_start)
+    old_end = old_cursor - 1
+    new_end = new_cursor - 1
+    rendered_line_keys = _collect_rendered_hunk_line_keys(hunk)
+    required = 0
+    for summary in summaries:
+        anchor_key = _resolve_review_thread_display_anchor_key(summary)
+        if anchor_key is None or anchor_key in rendered_line_keys:
+            continue
+        side, line = anchor_key
+        distance = _resolve_nearby_thread_line_distance(
+            side=side,
+            line=line,
+            old_start=old_start,
+            old_end=old_end,
+            new_start=new_start,
+            new_end=new_end,
+        )
+        if distance is None or distance > max_auto_context_lines:
+            continue
+        required = max(required, distance)
+    return required
+
+
+def _resolve_nearby_thread_line_distance(
+    *,
+    side: str,
+    line: int,
+    old_start: int,
+    old_end: int,
+    new_start: int,
+    new_end: int,
+) -> int | None:
+    if side == "RIGHT":
+        if line < new_start:
+            return new_start - line
+        if line > new_end:
+            return line - new_end
+        return 0
+    if side == "LEFT":
+        if line < old_start:
+            return old_start - line
+        if line > old_end:
+            return line - old_end
+        return 0
+    return None
+
+
 def _build_left_only_review_context_lines(
     *,
     snapshot_lines: tuple[str, ...],
@@ -1615,30 +1710,28 @@ def _resolve_review_start_thread_summaries_for_file(
     return sorted(candidates.values(), key=lambda summary: (summary.display_ref or "", summary.thread_id))
 
 
-def _resolve_review_start_thread_summaries_for_hunk(
-    *,
-    hunk: _DiffHunk,
-    summaries: list[ReviewThreadSummary],
-) -> list[ReviewThreadSummary]:
-    related: list[ReviewThreadSummary] = []
-    for summary in summaries:
-        if _is_file_scoped_thread_summary(summary):
-            continue
-        if set(summary.right_lines) & hunk.right_commentable_lines:
-            related.append(summary)
-            continue
-        if set(summary.left_lines) & hunk.left_commentable_lines:
-            related.append(summary)
-    return related
+def _filter_review_start_thread_summaries(summaries: list[ReviewThreadSummary]) -> list[ReviewThreadSummary]:
+    return [summary for summary in summaries if not _should_hide_review_start_thread(summary)]
+
+
+def _should_hide_review_start_thread(summary: ReviewThreadSummary) -> bool:
+    if not summary.is_outdated:
+        return False
+    return not _review_thread_has_current_anchor(summary)
+
+
+def _review_thread_has_current_anchor(summary: ReviewThreadSummary) -> bool:
+    return summary.anchor_side == "RIGHT" or bool(summary.right_lines)
 
 
 def _format_review_thread_file_summary(summaries: list[ReviewThreadSummary]) -> str:
-    unresolved_count = sum(1 for summary in summaries if not summary.is_resolved)
-    resolved_count = len(summaries) - unresolved_count
-    return (
-        f"Existing review threads in this file: {len(summaries)} "
-        f"({unresolved_count} unresolved, {resolved_count} resolved)"
-    )
+    active_count = sum(1 for summary in summaries if not summary.is_resolved)
+    resolved_count = len(summaries) - active_count
+    if resolved_count > 0:
+        return (
+            f"Existing review threads in this file: {len(summaries)} ({active_count} active, {resolved_count} resolved)"
+        )
+    return f"Existing review threads in this file: {len(summaries)} ({active_count} active)"
 
 
 def _is_file_scoped_thread_summary(summary: ReviewThreadSummary) -> bool:
@@ -1646,14 +1739,149 @@ def _is_file_scoped_thread_summary(summary: ReviewThreadSummary) -> bool:
 
 
 def _render_review_thread_summary_items(summaries: list[ReviewThreadSummary]) -> list[str]:
-    return [f"- {_format_review_thread_summary_item(summary)}" for summary in summaries]
+    lines: list[str] = []
+    for summary in summaries:
+        lines.append(f"- {_format_review_thread_summary_item(summary)}")
+        lines.extend(_render_review_comment_summary_items(summary))
+    return lines
 
 
 def _format_review_thread_summary_item(summary: ReviewThreadSummary) -> str:
-    state = "resolved" if summary.is_resolved else "unresolved"
+    prefix = "resolved thread" if summary.is_resolved else "thread"
     location = summary.display_ref or "file-scoped"
     comment_label = "comment" if summary.comment_count == 1 else "comments"
-    return f"{state} {summary.thread_id} at {location} ({summary.comment_count} {comment_label})"
+    return f"{prefix} {summary.thread_id} at {location} ({summary.comment_count} {comment_label})"
+
+
+def _render_review_comment_summary_items(summary: ReviewThreadSummary) -> list[str]:
+    lines: list[str] = []
+    for index, comment in enumerate(summary.comments, start=1):
+        flags: list[str] = []
+        if comment.is_outdated:
+            flags.append("outdated")
+        if comment.is_minimized:
+            flags.append(f"hidden:{(comment.minimized_reason or 'minimized').lower()}")
+        flag_suffix = f" [{' '.join(flags)}]" if flags else ""
+        lines.append(f"  [{index}] @{comment.author}{flag_suffix}: {comment.body_preview}")
+    return lines
+
+
+def _build_inline_review_thread_blocks_for_file(
+    *,
+    hunks: list[_DiffHunk],
+    summaries: list[ReviewThreadSummary],
+    extra_contexts: list[
+        tuple[
+            list[tuple[int | None, int | None, str]],
+            list[tuple[int | None, int | None, str]],
+        ]
+        | None
+    ],
+) -> list[dict[tuple[str, int], list[str]]]:
+    blocks_by_hunk: list[dict[tuple[str, int], list[str]]] = [{} for _ in hunks]
+    primary_rendered_line_keys = [_collect_rendered_hunk_line_keys(hunk) for hunk in hunks]
+    all_rendered_line_keys = [
+        _collect_rendered_hunk_line_keys(hunk, extra_context_lines=extra_contexts[index])
+        for index, hunk in enumerate(hunks)
+    ]
+    for summary in summaries:
+        resolved = _resolve_inline_review_thread_target_hunk_index(
+            summary=summary,
+            primary_rendered_line_keys=primary_rendered_line_keys,
+            all_rendered_line_keys=all_rendered_line_keys,
+        )
+        if resolved is None:
+            continue
+        hunk_index, anchor_key = resolved
+        blocks_by_hunk[hunk_index].setdefault(anchor_key, []).extend(_render_inline_review_thread_block(summary))
+    return blocks_by_hunk
+
+
+def _resolve_inline_review_thread_target_hunk_index(
+    *,
+    summary: ReviewThreadSummary,
+    primary_rendered_line_keys: list[set[tuple[str, int]]],
+    all_rendered_line_keys: list[set[tuple[str, int]]],
+) -> tuple[int, tuple[str, int]] | None:
+    anchor_key = _resolve_review_thread_display_anchor_key(summary)
+    if anchor_key is None:
+        return None
+    for index, keys in enumerate(primary_rendered_line_keys):
+        if anchor_key in keys:
+            return index, anchor_key
+    for index, keys in enumerate(all_rendered_line_keys):
+        if anchor_key in keys:
+            return index, anchor_key
+    return None
+
+
+def _resolve_review_thread_display_anchor_key(summary: ReviewThreadSummary) -> tuple[str, int] | None:
+    if summary.anchor_side is not None and summary.anchor_line is not None and summary.anchor_line > 0:
+        return summary.anchor_side, summary.anchor_line
+    if summary.right_lines:
+        return "RIGHT", summary.right_lines[0]
+    if summary.left_lines:
+        return "LEFT", summary.left_lines[0]
+    return None
+
+
+def _collect_rendered_hunk_line_keys(
+    hunk: _DiffHunk,
+    *,
+    extra_context_lines: tuple[
+        list[tuple[int | None, int | None, str]],
+        list[tuple[int | None, int | None, str]],
+    ]
+    | None = None,
+) -> set[tuple[str, int]]:
+    keys: set[tuple[str, int]] = set()
+    match = _HUNK_HEADER_RE.match(hunk.header)
+    old_line = int(match.group("old")) if match is not None else 1
+    new_line = int(match.group("new")) if match is not None else 1
+    leading_extra_lines: list[tuple[int | None, int | None, str]] = []
+    trailing_extra_lines: list[tuple[int | None, int | None, str]] = []
+    if extra_context_lines is not None:
+        leading_extra_lines, trailing_extra_lines = extra_context_lines
+
+    def add(left: int | None, right: int | None) -> None:
+        if left is not None:
+            keys.add(("LEFT", left))
+        if right is not None:
+            keys.add(("RIGHT", right))
+
+    for left, right, _ in leading_extra_lines:
+        add(left, right)
+    for raw in hunk.lines[1:]:
+        marker = raw[:1]
+        if marker == "+":
+            add(None, new_line)
+            new_line += 1
+        elif marker == " ":
+            add(old_line, new_line)
+            old_line += 1
+            new_line += 1
+        elif marker == "-":
+            add(old_line, None)
+            old_line += 1
+    for left, right, _ in trailing_extra_lines:
+        add(left, right)
+    return keys
+
+
+def _render_inline_review_thread_block(summary: ReviewThreadSummary) -> list[str]:
+    marker = "✓ resolved thread" if summary.is_resolved else "💬 thread"
+    comment_label = "comment" if summary.comment_count == 1 else "comments"
+    location_suffix = f" at {summary.display_ref}" if summary.display_ref else ""
+    lines = [f"{marker} {summary.thread_id}{location_suffix} ({summary.comment_count} {comment_label})"]
+    for index, comment in enumerate(summary.comments, start=1):
+        flags: list[str] = []
+        if comment.is_outdated:
+            flags.append("outdated")
+        if comment.is_minimized:
+            flags.append(f"hidden:{(comment.minimized_reason or 'minimized').lower()}")
+        flag_suffix = f" [{' '.join(flags)}]" if flags else ""
+        lines.append(f"↳ [{index}] @{comment.author}{flag_suffix}: {comment.body_preview}")
+    return lines
 
 
 def _review_start_page_command(
