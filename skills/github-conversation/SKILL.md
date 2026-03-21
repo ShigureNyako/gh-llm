@@ -59,6 +59,19 @@ gh-llm pr review-expand <PRR_id[,PRR_id...]> --pr <pr> --repo <owner/repo>
 gh-llm pr checks --pr <pr> --repo <owner/repo>
 ```
 
+### Prepare a PR body
+
+```bash
+gh-llm pr body-template --repo <owner/repo>
+
+gh-llm pr body-template \
+  --repo <owner/repo> \
+  --requirements 'Motivation,Validation,Related Issues' \
+  --output /tmp/pr_body.md
+```
+
+Use this before `gh pr create` when you need to load a repo PR template, append required sections, and produce a ready-to-edit body file.
+
 ### Read an issue
 
 ```bash

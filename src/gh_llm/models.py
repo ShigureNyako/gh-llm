@@ -194,6 +194,7 @@ class TimelineContext:
     is_draft: bool
     body: str
     updated_at: str
+    timeline_loaded: bool = True
     labels: tuple[str, ...] = ()
     kind: str = "pr"
     pr_reactions_summary: str | None = None
@@ -237,6 +238,7 @@ class TimelineContext:
             "is_draft": self.is_draft,
             "body": self.body,
             "updated_at": self.updated_at,
+            "timeline_loaded": self.timeline_loaded,
             "labels": list(self.labels),
             "kind": self.kind,
             "pr_reactions_summary": self.pr_reactions_summary,
@@ -282,6 +284,11 @@ class TimelineContext:
             is_draft=bool(value.get("is_draft")),
             body=_as_str(value.get("body"), ""),
             updated_at=_as_str(value.get("updated_at"), ""),
+            timeline_loaded=(
+                _as_int(value.get("total_pages"), 0) > 0
+                if value.get("timeline_loaded") is None
+                else bool(value.get("timeline_loaded"))
+            ),
             labels=tuple(_as_str(item, "") for item in _as_list(value.get("labels")) if item),
             kind=_as_str(value.get("kind"), "pr"),
             pr_reactions_summary=_as_str_optional(value.get("pr_reactions_summary")),
