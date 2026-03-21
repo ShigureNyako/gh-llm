@@ -97,6 +97,22 @@ gh-llm pr checks --pr 77900 --repo PaddlePaddle/Paddle --all
 gh-llm pr conflict-files --pr 77971 --repo PaddlePaddle/Paddle
 ```
 
+### PR Body Scaffold
+
+```bash
+# Load the repo PR template (when present), append required sections, and write a body file
+# The command also prints a ready-to-run `gh pr create --body-file ...` command.
+gh-llm pr body-template --repo ShigureLab/watchfs --title 'feat: add watcher summary'
+
+gh-llm pr body-template \
+  --repo ShigureLab/watchfs \
+  --requirements 'Motivation,Validation,Related Issues' \
+  --output /tmp/pr_body.md
+```
+
+If the repo has no PR template, `gh-llm` falls back to a simple editable scaffold.
+The bundled `skills/github-conversation/SKILL.md` also documents this workflow for skill users.
+
 ### Issue Reading
 
 ```bash

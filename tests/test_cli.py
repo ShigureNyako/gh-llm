@@ -120,6 +120,18 @@ class GhResponder:
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
             return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
 
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and cmd[2].startswith("repos/") and "/contents" not in cmd[2]:
+            payload = _repository_api_payload(cmd[2])
+            if payload is None:
+                return FakeCompletedProcess("", returncode=1, stderr="HTTP 404: Not Found")
+            return FakeCompletedProcess(json.dumps(payload))
+
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents" in cmd[2]:
+            payload = _repository_contents_payload(cmd[2])
+            if payload is None:
+                return FakeCompletedProcess("", returncode=1, stderr="HTTP 404: Not Found")
+            return FakeCompletedProcess(json.dumps(payload))
+
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -1859,6 +1871,206 @@ def test_pr_review_submit_supports_body_file_stdin(
     assert _extract_field(review_call, "body") == "stdin review body\n"
 
 
+def test_pr_body_template_uses_repo_template_and_appends_missing_sections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "ShigureLab/gh-llm",
+            "--title",
+            "feat: add PR body scaffold",
+            "--requirements",
+            "Motivation,Validation,Related Issues",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## PR Body Scaffold" in out
+    assert "template_found: true" in out
+    assert "template_path: .github/PULL_REQUEST_TEMPLATE.md" in out
+    assert 'required_sections: ["Motivation", "Validation", "Related Issues"]' in out
+    assert 'added_sections: ["Validation", "Related Issues"]' in out
+    assert "gh pr create --repo ShigureLab/gh-llm --title 'feat: add PR body scaffold' --body-file" in out
+
+    body = output_path.read_text(encoding="utf-8")
+    assert "## Motivation" in body
+    assert "Template motivation section" in body
+    assert "## Validation" in body
+    assert "<!-- TODO: fill Validation -->" in body
+    assert "## Related Issues" in body
+    assert "<!-- TODO: fill Related Issues -->" in body
+
+
+def test_pr_body_template_generates_scaffold_when_repo_has_no_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body-no-template.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "NoTemplateOrg/no-template",
+            "--requirements",
+            "改动动机,验证结果",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "template_found: false" in out
+    assert "template_path: (none)" in out
+    assert "⌨ pr_title: '<pr_title>'" in out
+    assert 'added_sections: ["改动动机", "验证结果"]' in out
+    assert "gh pr create --repo NoTemplateOrg/no-template --title '<pr_title>' --body-file" in out
+
+    body = output_path.read_text(encoding="utf-8")
+    assert body.startswith("## 改动动机")
+    assert "<!-- TODO: fill 改动动机 -->" in body
+    assert "## 验证结果" in body
+    assert "<!-- TODO: fill 验证结果 -->" in body
+    assert "## Motivation" not in body
+
+
+def test_pr_body_template_finds_mixed_case_txt_template_via_directory_listing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body-mixed-case.txt.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "ExampleOrg/mixed-case-template",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "template_found: true" in out
+    assert "template_path: .github/Pull_Request_Template.TXT" in out
+    assert "Template from mixed-case txt" in output_path.read_text(encoding="utf-8")
+
+
+def test_pr_body_template_finds_root_template_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body-root-directory.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "FQ-Studio-SV/SysAcopio",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "template_found: true" in out
+    assert "template_path: PULL_REQUEST_TEMPLATE/template.md" in out
+    assert "Root directory template body" in output_path.read_text(encoding="utf-8")
+
+
+def test_pr_body_template_finds_docs_template_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body-docs-directory.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "DocsTemplateOrg/docs-template",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "template_found: true" in out
+    assert "template_path: docs/PULL_REQUEST_TEMPLATE/bugfix.md" in out
+    assert "Docs directory template body" in output_path.read_text(encoding="utf-8")
+
+
+def test_decode_repository_contents_text_returns_none_for_invalid_base64() -> None:
+    payload: dict[str, object] = {"encoding": "base64", "content": "A"}
+    assert github_api._decode_repository_contents_text(payload) is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_pr_body_template_surfaces_non_404_lookup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_contents_failure(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and cmd[2].startswith("repos/BrokenOrg/broken-template/contents"):
+            return FakeCompletedProcess("", returncode=1, stderr="HTTP 500: Internal Server Error")
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_contents_failure)
+    output_path = tmp_path / "pr-body-broken.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "BrokenOrg/broken-template",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: HTTP 500: Internal Server Error" in err
+    assert not output_path.exists()
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -1973,6 +2185,118 @@ def _pull_files_payload(path: str) -> list[dict[str, Any]]:
     start = max(0, (page - 1) * per_page)
     end = start + per_page
     return files[start:end]
+
+
+def _repository_api_payload(path: str) -> dict[str, Any] | None:
+    route = path.partition("?")[0]
+    parts = route.split("/")
+    if len(parts) != 3 or parts[0] != "repos":
+        return None
+    owner = parts[1]
+    name = parts[2]
+    return {"full_name": f"{owner}/{name}", "default_branch": "main"}
+
+
+def _repository_contents_payload(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+    route = path.partition("?")[0]
+    marker = "/contents"
+    if marker not in route:
+        return None
+    repo_route, _, remainder = route.partition(marker)
+    raw_repo_path = remainder.removeprefix("/")
+    route_parts = repo_route.split("/")
+    if len(route_parts) < 3:
+        return None
+    repo = f"{route_parts[1]}/{route_parts[2]}"
+
+    if repo == "ShigureLab/gh-llm" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE.md":
+        content = "\n".join(
+            [
+                "## Motivation",
+                "",
+                "Template motivation section",
+                "",
+                "## Checklist",
+                "",
+                "- [ ] Tests added",
+            ]
+        )
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    if repo == "ExampleOrg/mixed-case-template" and raw_repo_path == ".github":
+        return [
+            {
+                "type": "file",
+                "path": ".github/Pull_Request_Template.TXT",
+                "name": "Pull_Request_Template.TXT",
+            }
+        ]
+
+    if repo == "ExampleOrg/mixed-case-template" and raw_repo_path == ".github/Pull_Request_Template.TXT":
+        content = "## Summary\n\nTemplate from mixed-case txt\n"
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    if repo == "FQ-Studio-SV/SysAcopio" and raw_repo_path == "":
+        return [
+            {
+                "type": "dir",
+                "path": "PULL_REQUEST_TEMPLATE",
+                "name": "PULL_REQUEST_TEMPLATE",
+            }
+        ]
+
+    if repo == "FQ-Studio-SV/SysAcopio" and raw_repo_path == "PULL_REQUEST_TEMPLATE":
+        return [
+            {
+                "type": "file",
+                "path": "PULL_REQUEST_TEMPLATE/template.md",
+                "name": "template.md",
+            }
+        ]
+
+    if repo == "FQ-Studio-SV/SysAcopio" and raw_repo_path == "PULL_REQUEST_TEMPLATE/template.md":
+        content = "## Summary\n\nRoot directory template body\n"
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    if repo == "DocsTemplateOrg/docs-template" and raw_repo_path == "docs":
+        return [
+            {
+                "type": "dir",
+                "path": "docs/PULL_REQUEST_TEMPLATE",
+                "name": "PULL_REQUEST_TEMPLATE",
+            }
+        ]
+
+    if repo == "DocsTemplateOrg/docs-template" and raw_repo_path == "docs/PULL_REQUEST_TEMPLATE":
+        return [
+            {
+                "type": "file",
+                "path": "docs/PULL_REQUEST_TEMPLATE/bugfix.md",
+                "name": "bugfix.md",
+            }
+        ]
+
+    if repo == "DocsTemplateOrg/docs-template" and raw_repo_path == "docs/PULL_REQUEST_TEMPLATE/bugfix.md":
+        content = "## Summary\n\nDocs directory template body\n"
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    return None
 
 
 class _FakeStdin:
