@@ -434,6 +434,8 @@ def test_doctor_reports_entrypoint_probes_and_env(
     monkeypatch.setattr(doctor_commands.shutil, "which", fake_which)
     monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
     monkeypatch.setenv("https_proxy", "http://proxy.example.test:8443")
+    monkeypatch.setenv("all_proxy", "socks5://proxy.example.test:1080")
+    monkeypatch.setenv("no_proxy", "localhost,127.0.0.1")
     monkeypatch.setenv("GH_TOKEN", "secret-token")
     monkeypatch.setattr(sys, "argv", ["gh-llm"])
 
@@ -445,6 +447,8 @@ def test_doctor_reports_entrypoint_probes_and_env(
     assert "- gh_llm_path: /Users/test/bin/gh-llm" in out
     assert "- target_host: github.com" in out
     assert "- https_proxy: http://proxy.example.test:8443" in out
+    assert "- all_proxy: socks5://proxy.example.test:1080" in out
+    assert "- no_proxy: localhost,127.0.0.1" in out
     assert "- GH_TOKEN: (set)" in out
     assert "- entrypoint version (`gh llm --version`): 0.1.11" in out
     assert "- auth status (`gh auth status --active --hostname github.com`): ok" in out
@@ -1807,9 +1811,34 @@ def test_graphql_eof_failure_prints_layered_diagnostics(
     assert "Category: GraphQL transport / network" in err
     assert "Command: gh api graphql" in err
     assert "Try next:" in err
-    assert "- gh auth status" in err
+    assert "- gh auth status --active --hostname github.com" in err
     assert "- gh api user" in err
     assert "- gh api graphql -f query='query{viewer{login}}'" in err
+    assert "- gh llm doctor" in err
+
+
+def test_graphql_error_hints_scope_auth_status_to_target_host(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def failing_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        del check, capture_output, text
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return FakeCompletedProcess("", returncode=1, stderr='Post "https://api.github.com/graphql": EOF')
+        return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
+
+    def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(github_api.subprocess, "run", failing_run)
+    monkeypatch.setattr(github_api.time, "sleep", no_sleep)
+    monkeypatch.setenv("GH_HOST", "github.example.com")
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "- gh auth status --active --hostname github.example.com" in err
     assert "- gh llm doctor" in err
 
 

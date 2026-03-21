@@ -4,6 +4,7 @@ import shlex
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from gh_llm.environment import auth_status_command_text
 from gh_llm.invocation import display_command_with
 
 if TYPE_CHECKING:
@@ -11,7 +12,6 @@ if TYPE_CHECKING:
 
 _GRAPHQL_PROBE_COMMAND = "gh api graphql -f query='query{viewer{login}}'"
 _REST_PROBE_COMMAND = "gh api user"
-_AUTH_STATUS_COMMAND = "gh auth status"
 _RATE_LIMIT_COMMAND = "gh api rate_limit"
 _GH_AUTH_LOGIN_COMMAND = "gh auth login"
 _GRAPHQL_BACKED_COMMANDS = {
@@ -89,7 +89,7 @@ def _diagnose_command_error(error: GhCommandError) -> _Diagnosis:
             headline="GitHub API request hit rate limiting.",
             category="rate limit",
             explanation="GitHub accepted the request but refused to serve it until the limit window resets.",
-            next_commands=(_RATE_LIMIT_COMMAND, _AUTH_STATUS_COMMAND, display_command_with("doctor")),
+            next_commands=(_RATE_LIMIT_COMMAND, _auth_status_command(), display_command_with("doctor")),
         )
 
     if _looks_like_auth_error(lowered):
@@ -98,7 +98,7 @@ def _diagnose_command_error(error: GhCommandError) -> _Diagnosis:
             category="authentication",
             explanation="The current `gh` login or token does not look usable for this request.",
             next_commands=(
-                _AUTH_STATUS_COMMAND,
+                _auth_status_command(),
                 _GH_AUTH_LOGIN_COMMAND,
                 _REST_PROBE_COMMAND,
                 display_command_with("doctor"),
@@ -115,7 +115,7 @@ def _diagnose_command_error(error: GhCommandError) -> _Diagnosis:
                 "This usually points to transient network, proxy, TLS, or GitHub-side transport issues."
             ),
             next_commands=(
-                _AUTH_STATUS_COMMAND,
+                _auth_status_command(),
                 _REST_PROBE_COMMAND,
                 _GRAPHQL_PROBE_COMMAND,
                 display_command_with("doctor"),
@@ -134,7 +134,7 @@ def _diagnose_command_error(error: GhCommandError) -> _Diagnosis:
         headline="GitHub CLI command failed.",
         category="generic gh failure",
         explanation="The underlying `gh` command did not complete successfully.",
-        next_commands=(_AUTH_STATUS_COMMAND, display_command_with("doctor")),
+        next_commands=(_auth_status_command(), display_command_with("doctor")),
     )
 
 
@@ -142,6 +142,10 @@ def _format_attempt_suffix(error: GhCommandError) -> str:
     if error.attempts <= 1:
         return ""
     return f" after {error.attempts} attempts"
+
+
+def _auth_status_command() -> str:
+    return auth_status_command_text()
 
 
 def _is_graphql_backed_command(cmd: Sequence[str]) -> bool:
@@ -225,7 +229,7 @@ def _resolution_commands(cmd: Sequence[str]) -> tuple[str, ...]:
             f"gh issue view {selector} --repo {repo}",
             display_command_with("doctor"),
         )
-    return (_AUTH_STATUS_COMMAND, display_command_with("doctor"))
+    return (_auth_status_command(), display_command_with("doctor"))
 
 
 def _extract_option_value(cmd: Sequence[str], option: str) -> str | None:

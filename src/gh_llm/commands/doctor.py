@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from gh_llm import __version__
+from gh_llm.environment import build_auth_status_command, resolve_target_host
 from gh_llm.invocation import detect_prog_name, display_command
 
 if TYPE_CHECKING:
@@ -19,7 +20,6 @@ if TYPE_CHECKING:
     from typing import Any
 
 _GRAPHQL_PROBE_QUERY = "query{viewer{login}}"
-_DEFAULT_TARGET_HOST = "github.com"
 _ENV_KEYS = (
     "GH_LLM_DISPLAY_CMD",
     "GH_HOST",
@@ -29,7 +29,9 @@ _ENV_KEYS = (
     "https_proxy",
     "HTTP_PROXY",
     "HTTPS_PROXY",
+    "all_proxy",
     "ALL_PROXY",
+    "no_proxy",
     "NO_PROXY",
 )
 
@@ -61,7 +63,7 @@ def register_doctor_parser(subparsers: Any) -> None:
 def cmd_doctor(_: Any) -> int:
     entrypoint = display_command()
     argv0 = detect_prog_name(sys.argv[0])
-    target_host = _resolve_target_host()
+    target_host = resolve_target_host()
     critical_probes = (
         _probe_entrypoint_version(entrypoint),
         _probe_gh_version(),
@@ -165,7 +167,7 @@ def _probe_gh_version() -> _ProbeResult:
 
 
 def _probe_auth_status(target_host: str) -> _ProbeResult:
-    command = ["gh", "auth", "status", "--active", "--hostname", target_host]
+    command = list(build_auth_status_command(target_host=target_host))
     result = _run_command(command)
     summary = "ok" if result.ok else "failed"
     return _ProbeResult(
@@ -292,11 +294,6 @@ def _resolve_entrypoint_path(entrypoint: str) -> str:
 def _resolve_binary_path(name: str) -> str:
     resolved = shutil.which(name)
     return resolved or "(not found)"
-
-
-def _resolve_target_host() -> str:
-    raw = os.environ.get("GH_HOST", "").strip()
-    return raw or _DEFAULT_TARGET_HOST
 
 
 def _format_env_value(key: str, value: str | None) -> str:
