@@ -145,6 +145,8 @@ gh-llm issue comment-edit IC_xxx --body '<new_body>' --issue 77924 --repo Paddle
 
 # Reply / resolve / unresolve review thread
 gh-llm pr thread-reply PRRT_xxx --body '<reply>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr thread-reply PRRT_xxx --body-file reply.md --pr 77900 --repo PaddlePaddle/Paddle
+cat reply.md | gh-llm pr thread-reply PRRT_xxx --body-file - --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr thread-resolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 ```
@@ -188,6 +190,13 @@ gh-llm pr review-comment \
   --side RIGHT \
   --body 'Please add a regression test for duplicate keyword arguments.' \
   --pr 77938 --repo PaddlePaddle/Paddle
+
+gh-llm pr review-comment \
+  --path 'paddle/phi/api/include/compat/torch/library.h' \
+  --line 106 \
+  --side RIGHT \
+  --body-file review-comment.md \
+  --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
 ### 3) Add inline suggestion
@@ -198,6 +207,14 @@ gh-llm pr review-suggest \
   --line 123 \
   --side RIGHT \
   --body 'Suggested update' \
+  --suggestion 'replacement_code_here' \
+  --pr 77938 --repo PaddlePaddle/Paddle
+
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line 123 \
+  --side RIGHT \
+  --body-file suggestion-reason.md \
   --suggestion 'replacement_code_here' \
   --pr 77938 --repo PaddlePaddle/Paddle
 ```
@@ -215,6 +232,8 @@ gh-llm pr review-submit \
   --body-file review.md \
   --pr 77938 --repo PaddlePaddle/Paddle
 ```
+
+`thread-reply`, `review-comment`, `review-suggest`, and `review-submit` all support `--body-file -` to read multi-line text from standard input.
 
 Submit behavior:
 
