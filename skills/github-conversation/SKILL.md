@@ -50,6 +50,14 @@ Command prefix mapping:
 
 ## Fast start
 
+### Preflight an unfamiliar repo
+
+```bash
+gh-llm repo preflight --repo <owner/repo>
+```
+
+Use this before forking or opening a PR when you need the default branch, onboarding docs (`CONTRIBUTING*`, `AGENTS.md`, PR template, `CODEOWNERS`), branch-protection summary, and likely next commands in one place.
+
 ### Read a PR
 
 ```bash

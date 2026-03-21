@@ -64,21 +64,6 @@ npx skills add https://github.com/ShigureLab/gh-llm --skill github-conversation
 
 ## Quick Start
 
-### Repo Preflight / Onboarding
-
-```bash
-gh-llm repo preflight --repo PaddlePaddle/PaddleFleet
-gh-llm repo onboarding --repo PaddlePaddle/PaddleFleet
-```
-
-This prints a repo-level onboarding summary before you start contributing, including:
-
-- default branch
-- fork / push-access hint
-- `CONTRIBUTING*`, `AGENTS.md`, PR template, and `CODEOWNERS` paths when found
-- default-branch protection summary (required checks / reviews)
-- context-aware next commands such as `gh repo fork`, `gh pr create`, and `gh-llm pr checks`
-
 ### PR Reading
 
 ```bash

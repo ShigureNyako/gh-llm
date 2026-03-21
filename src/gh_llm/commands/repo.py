@@ -15,8 +15,7 @@ def register_repo_parser(subparsers: Any) -> None:
 
     preflight_parser = repo_subparsers.add_parser(
         "preflight",
-        aliases=["onboarding"],
-        help="show repo-level preflight / onboarding summary",
+        help="show repo-level preflight summary",
     )
     preflight_parser.add_argument("--repo", required=True, help="repository in OWNER/REPO format")
     preflight_parser.set_defaults(handler=cmd_repo_preflight)
