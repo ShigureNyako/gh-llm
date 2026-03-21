@@ -2209,7 +2209,6 @@ def test_repo_preflight_warns_on_truncated_tree_and_detects_contributing_prefix(
     assert "gh browse -R PaddlePaddle/Paddle --branch develop 'CONTRIBUTING_GUIDE.md'" in out
 
 
-
 def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
     del after
     return {
@@ -2243,7 +2242,6 @@ def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
     }
 
 
-
 def _repo_tree_payload() -> dict[str, Any]:
     return {
         "sha": "mock-tree-sha",
@@ -2257,7 +2255,6 @@ def _repo_tree_payload() -> dict[str, Any]:
             {"path": "docs/guide.md", "type": "blob"},
         ],
     }
-
 
 
 def _repo_branch_payload(path: str) -> dict[str, Any] | None:
