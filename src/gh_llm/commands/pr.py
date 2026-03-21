@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import shlex
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,6 +15,7 @@ from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
 from gh_llm.models import PullRequestDiffPage
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
+from gh_llm.pr_body import build_pull_request_body_scaffold, parse_required_sections
 from gh_llm.render import (
     render_checks_section,
     render_comment_node_detail,
@@ -158,6 +163,27 @@ def register_pr_parser(subparsers: Any) -> None:
     checks_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     checks_parser.add_argument("--all", action="store_true", help="show all checks including passed")
     checks_parser.set_defaults(handler=cmd_pr_checks)
+
+    body_template_parser = pr_subparsers.add_parser(
+        "body-template",
+        help="load a repo PR template, fill missing required sections, and write an editable body scaffold",
+    )
+    body_template_parser.add_argument("--repo", required=True, help="repository in OWNER/REPO format")
+    body_template_parser.add_argument("--title", help="optional PR title used in the suggested `gh pr create` command")
+    body_template_parser.add_argument(
+        "--requirements",
+        "--requirement",
+        "--require-section",
+        dest="requirements",
+        action="append",
+        default=[],
+        help="required body sections, comma-separated or repeatable",
+    )
+    body_template_parser.add_argument(
+        "--output",
+        help="write the scaffold to this file (defaults to a temporary .md file)",
+    )
+    body_template_parser.set_defaults(handler=cmd_pr_body_template)
 
     conflicts_parser = pr_subparsers.add_parser(
         "conflict-files",
@@ -576,6 +602,56 @@ def cmd_pr_checks(args: Any) -> int:
     ):
         print(line)
     return 0
+
+
+def cmd_pr_body_template(args: Any) -> int:
+    client = GitHubClient()
+    repo = str(args.repo)
+    required_sections = parse_required_sections(list(getattr(args, "requirements", [])))
+    template_path, template_text = client.fetch_pull_request_template(repo)
+    scaffold = build_pull_request_body_scaffold(template_text, required_sections=required_sections)
+    output_path = _resolve_pr_body_output_path(getattr(args, "output", None))
+    output_path.write_text(scaffold.body, encoding="utf-8")
+
+    title = str(args.title).strip() if getattr(args, "title", None) else ""
+    quoted_repo = shlex.quote(repo)
+    quoted_output_path = shlex.quote(str(output_path))
+    quoted_title = shlex.quote(title) if title else "'<pr_title>'"
+
+    print("## PR Body Scaffold")
+    print(f"repo: {repo}")
+    print(f"template_found: {'true' if template_path else 'false'}")
+    print(f"template_path: {template_path or '(none)'}")
+    print(f"output_file: {output_path}")
+    print(f"required_sections: {json.dumps(required_sections, ensure_ascii=False)}")
+    print(f"added_sections: {json.dumps(list(scaffold.added_sections), ensure_ascii=False)}")
+    print()
+    print("## Body")
+    print("<pr_body>")
+    print(scaffold.body.rstrip())
+    print("</pr_body>")
+    print()
+    print("## Actions")
+    if not title:
+        print("⌨ pr_title: '<pr_title>'")
+    print(f"⏎ Edit scaffold file: `{quoted_output_path}`")
+    print(
+        f"⏎ Create PR via gh: `gh pr create --repo {quoted_repo} --title {quoted_title} --body-file {quoted_output_path}`"
+    )
+    return 0
+
+
+def _resolve_pr_body_output_path(raw_output: object) -> Path:
+    if raw_output is None:
+        fd, temp_path = tempfile.mkstemp(prefix="gh-llm-pr-body-", suffix=".md")
+        os.close(fd)
+        return Path(temp_path)
+
+    path = Path(str(raw_output)).expanduser()
+    if path.exists() and path.is_dir():
+        raise RuntimeError(f"output path is a directory: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def cmd_pr_conflict_files(args: Any) -> int:

@@ -1391,22 +1391,78 @@ mutation($id:ID!,$body:String!){
             self._file_lines_cache[cache_key] = None
             return None
 
-        encoding = _as_optional_str(payload.get("encoding"))
-        content = _as_optional_str(payload.get("content"))
-        if encoding != "base64" or content is None:
-            self._file_lines_cache[cache_key] = None
-            return None
-
-        normalized = content.replace("\n", "")
-        try:
-            decoded = base64.b64decode(normalized, validate=False).decode("utf-8", errors="replace")
-        except (ValueError, UnicodeDecodeError):
+        decoded = _decode_repository_contents_text(payload)
+        if decoded is None:
             self._file_lines_cache[cache_key] = None
             return None
 
         lines = tuple(decoded.splitlines())
         self._file_lines_cache[cache_key] = lines
         return lines
+
+    def fetch_pull_request_template(self, repo: str) -> tuple[str | None, str | None]:
+        owner, name = _parse_repo_full_name(repo)
+        direct_candidates = (
+            ".github/PULL_REQUEST_TEMPLATE.md",
+            ".github/pull_request_template.md",
+            "PULL_REQUEST_TEMPLATE.md",
+            "pull_request_template.md",
+            "docs/PULL_REQUEST_TEMPLATE.md",
+            "docs/pull_request_template.md",
+        )
+        for candidate in direct_candidates:
+            text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
+            if text is not None:
+                return candidate, text
+
+        for directory in (".github/PULL_REQUEST_TEMPLATE", ".github/pull_request_template"):
+            for candidate in self._list_repository_template_files(owner=owner, name=name, path=directory):
+                text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
+                if text is not None:
+                    return candidate, text
+
+        return None, None
+
+    def _fetch_repository_text_file(self, *, owner: str, name: str, path: str) -> str | None:
+        api_path = f"repos/{owner}/{name}/contents/{quote(path, safe='/')}"
+        try:
+            payload = _run_command_json(
+                ["gh", "api", api_path],
+                max_attempts=GRAPHQL_MAX_ATTEMPTS,
+                backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+                backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+            )
+        except RuntimeError:
+            return None
+
+        if (_as_optional_str(payload.get("type")) or "") != "file":
+            return None
+        return _decode_repository_contents_text(payload)
+
+    def _list_repository_template_files(self, *, owner: str, name: str, path: str) -> tuple[str, ...]:
+        api_path = f"repos/{owner}/{name}/contents/{quote(path, safe='/')}"
+        try:
+            payload = _run_command_json_any(
+                ["gh", "api", api_path],
+                max_attempts=GRAPHQL_MAX_ATTEMPTS,
+                backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+                backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+            )
+        except RuntimeError:
+            return ()
+
+        candidates: list[str] = []
+        for raw_entry in _as_list(payload):
+            entry = _as_dict_optional(raw_entry)
+            if entry is None:
+                continue
+            if (_as_optional_str(entry.get("type")) or "") != "file":
+                continue
+            candidate_path = _as_optional_str(entry.get("path")) or ""
+            if not _is_pull_request_template_path(candidate_path):
+                continue
+            candidates.append(candidate_path)
+        return tuple(sorted(candidates, key=str.casefold))
 
     def submit_pull_request_review(
         self,
@@ -2255,6 +2311,31 @@ def _parse_owner_repo(pr_url: str) -> tuple[str, str]:
     if len(parts) < 2:
         raise RuntimeError(f"failed to parse owner/repo from url: {pr_url}")
     return parts[0], parts[1]
+
+
+def _parse_repo_full_name(repo: str) -> tuple[str, str]:
+    owner, separator, name = repo.strip().partition("/")
+    if not owner or not separator or not name:
+        raise RuntimeError(f"invalid repo format: {repo}. Expected OWNER/REPO")
+    return owner, name
+
+
+def _decode_repository_contents_text(payload: dict[str, object]) -> str | None:
+    encoding = _as_optional_str(payload.get("encoding"))
+    content = _as_optional_str(payload.get("content"))
+    if encoding != "base64" or content is None:
+        return None
+
+    normalized = content.replace("\n", "")
+    try:
+        return base64.b64decode(normalized, validate=False).decode("utf-8", errors="replace")
+    except ValueError:
+        return None
+
+
+def _is_pull_request_template_path(path: str) -> bool:
+    lowered = path.casefold()
+    return lowered.endswith((".md", ".markdown", ".mdown", ".txt"))
 
 
 def _clip_text(text: str | None, fallback: str, limit: int = MAX_INLINE_TEXT) -> tuple[str, bool]:

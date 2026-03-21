@@ -120,6 +120,12 @@ class GhResponder:
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
             return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
 
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents/" in cmd[2]:
+            payload = _repository_contents_payload(cmd[2])
+            if payload is None:
+                return FakeCompletedProcess("", returncode=1, stderr="HTTP 404: Not Found")
+            return FakeCompletedProcess(json.dumps(payload))
+
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -1774,6 +1780,86 @@ def test_pr_review_submit_supports_body_file_stdin(
     assert _extract_field(review_call, "body") == "stdin review body\n"
 
 
+def test_pr_body_template_uses_repo_template_and_appends_missing_sections(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "ShigureLab/gh-llm",
+            "--title",
+            "feat: add PR body scaffold",
+            "--requirements",
+            "Motivation,Validation,Related Issues",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## PR Body Scaffold" in out
+    assert "template_found: true" in out
+    assert "template_path: .github/PULL_REQUEST_TEMPLATE.md" in out
+    assert 'required_sections: ["Motivation", "Validation", "Related Issues"]' in out
+    assert 'added_sections: ["Validation", "Related Issues"]' in out
+    assert "gh pr create --repo ShigureLab/gh-llm --title 'feat: add PR body scaffold' --body-file" in out
+
+    body = output_path.read_text(encoding="utf-8")
+    assert "## Motivation" in body
+    assert "Template motivation section" in body
+    assert "## Validation" in body
+    assert "<!-- TODO: fill Validation -->" in body
+    assert "## Related Issues" in body
+    assert "<!-- TODO: fill Related Issues -->" in body
+
+
+def test_pr_body_template_generates_scaffold_when_repo_has_no_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    output_path = tmp_path / "pr-body-no-template.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "NoTemplateOrg/no-template",
+            "--requirements",
+            "改动动机,验证结果",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "template_found: false" in out
+    assert "template_path: (none)" in out
+    assert "⌨ pr_title: '<pr_title>'" in out
+    assert 'added_sections: ["改动动机", "验证结果"]' in out
+    assert "gh pr create --repo NoTemplateOrg/no-template --title '<pr_title>' --body-file" in out
+
+    body = output_path.read_text(encoding="utf-8")
+    assert body.startswith("## 改动动机")
+    assert "<!-- TODO: fill 改动动机 -->" in body
+    assert "## 验证结果" in body
+    assert "<!-- TODO: fill 验证结果 -->" in body
+    assert "## Motivation" not in body
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -1888,6 +1974,55 @@ def _pull_files_payload(path: str) -> list[dict[str, Any]]:
     start = max(0, (page - 1) * per_page)
     end = start + per_page
     return files[start:end]
+
+
+def _repository_contents_payload(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
+    route = path.partition("?")[0]
+    marker = "/contents/"
+    if marker not in route:
+        return None
+    repo_route, _, raw_repo_path = route.partition(marker)
+    route_parts = repo_route.split("/")
+    if len(route_parts) < 3:
+        return None
+    repo = f"{route_parts[1]}/{route_parts[2]}"
+
+    if repo == "ShigureLab/gh-llm" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE.md":
+        content = "\n".join(
+            [
+                "## Motivation",
+                "",
+                "Template motivation section",
+                "",
+                "## Checklist",
+                "",
+                "- [ ] Tests added",
+            ]
+        )
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    if repo == "ShigureLab/gh-llm" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE":
+        return [
+            {
+                "type": "file",
+                "path": ".github/PULL_REQUEST_TEMPLATE/bugfix.md",
+                "name": "bugfix.md",
+            }
+        ]
+
+    if repo == "ShigureLab/gh-llm" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE/bugfix.md":
+        content = "## Summary\n\nBugfix template body\n"
+        return {
+            "type": "file",
+            "encoding": "base64",
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+
+    return None
 
 
 class _FakeStdin:
