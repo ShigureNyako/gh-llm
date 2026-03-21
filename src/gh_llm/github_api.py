@@ -1403,6 +1403,7 @@ mutation($id:ID!,$body:String!){
 
     def fetch_pull_request_template(self, repo: str) -> tuple[str | None, str | None]:
         owner, name = _parse_repo_full_name(repo)
+        self._assert_repository_accessible(owner=owner, name=name)
         for candidate in _iter_direct_pull_request_template_candidate_paths():
             text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
             if text is not None:
@@ -1437,6 +1438,14 @@ mutation($id:ID!,$body:String!){
 
         return None, None
 
+    def _assert_repository_accessible(self, *, owner: str, name: str) -> None:
+        _run_command_json(
+            ["gh", "api", f"repos/{owner}/{name}"],
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
+
     def _fetch_repository_text_file(self, *, owner: str, name: str, path: str) -> str | None:
         api_path = _build_repository_contents_api_path(owner=owner, name=name, path=path)
         try:
@@ -1446,8 +1455,10 @@ mutation($id:ID!,$body:String!){
                 backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
                 backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
             )
-        except RuntimeError:
-            return None
+        except RuntimeError as error:
+            if _is_gh_api_not_found_error(str(error)):
+                return None
+            raise
 
         if (_as_optional_str(payload.get("type")) or "") != "file":
             return None
@@ -1502,8 +1513,10 @@ mutation($id:ID!,$body:String!){
                 backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
                 backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
             )
-        except RuntimeError:
-            return ()
+        except RuntimeError as error:
+            if _is_gh_api_not_found_error(str(error)):
+                return ()
+            raise
 
         entries: list[dict[str, object]] = []
         for raw_entry in _as_list(payload):
@@ -2436,6 +2449,11 @@ def _is_pull_request_template_directory_name(name: str) -> bool:
 def _is_pull_request_template_path(path: str) -> bool:
     lowered = path.casefold()
     return lowered.endswith((".md", ".markdown", ".mdown", ".txt"))
+
+
+def _is_gh_api_not_found_error(message: str) -> bool:
+    lowered = message.casefold()
+    return "404" in lowered and "not found" in lowered
 
 
 def _clip_text(text: str | None, fallback: str, limit: int = MAX_INLINE_TEXT) -> tuple[str, bool]:

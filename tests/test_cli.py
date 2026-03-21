@@ -120,6 +120,12 @@ class GhResponder:
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
             return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
 
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and cmd[2].startswith("repos/") and "/contents" not in cmd[2]:
+            payload = _repository_api_payload(cmd[2])
+            if payload is None:
+                return FakeCompletedProcess("", returncode=1, stderr="HTTP 404: Not Found")
+            return FakeCompletedProcess(json.dumps(payload))
+
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents" in cmd[2]:
             payload = _repository_contents_payload(cmd[2])
             if payload is None:
@@ -2031,6 +2037,40 @@ def test_decode_repository_contents_text_returns_none_for_invalid_base64() -> No
     assert github_api._decode_repository_contents_text(payload) is None  # pyright: ignore[reportPrivateUsage]
 
 
+def test_pr_body_template_surfaces_non_404_lookup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_contents_failure(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and cmd[2].startswith("repos/BrokenOrg/broken-template/contents"):
+            return FakeCompletedProcess("", returncode=1, stderr="HTTP 500: Internal Server Error")
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_contents_failure)
+    output_path = tmp_path / "pr-body-broken.md"
+
+    code = cli.run(
+        [
+            "pr",
+            "body-template",
+            "--repo",
+            "BrokenOrg/broken-template",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: HTTP 500: Internal Server Error" in err
+    assert not output_path.exists()
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -2145,6 +2185,16 @@ def _pull_files_payload(path: str) -> list[dict[str, Any]]:
     start = max(0, (page - 1) * per_page)
     end = start + per_page
     return files[start:end]
+
+
+def _repository_api_payload(path: str) -> dict[str, Any] | None:
+    route = path.partition("?")[0]
+    parts = route.split("/")
+    if len(parts) != 3 or parts[0] != "repos":
+        return None
+    owner = parts[1]
+    name = parts[2]
+    return {"full_name": f"{owner}/{name}", "default_branch": "main"}
 
 
 def _repository_contents_payload(path: str) -> dict[str, Any] | list[dict[str, Any]] | None:
