@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import re
 import subprocess
@@ -1405,26 +1406,53 @@ mutation($id:ID!,$body:String!){
         direct_candidates = (
             ".github/PULL_REQUEST_TEMPLATE.md",
             ".github/pull_request_template.md",
+            ".github/PULL_REQUEST_TEMPLATE.txt",
+            ".github/pull_request_template.txt",
             "PULL_REQUEST_TEMPLATE.md",
             "pull_request_template.md",
+            "PULL_REQUEST_TEMPLATE.txt",
+            "pull_request_template.txt",
             "docs/PULL_REQUEST_TEMPLATE.md",
             "docs/pull_request_template.md",
+            "docs/PULL_REQUEST_TEMPLATE.txt",
+            "docs/pull_request_template.txt",
         )
         for candidate in direct_candidates:
             text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
             if text is not None:
                 return candidate, text
 
-        for directory in (".github/PULL_REQUEST_TEMPLATE", ".github/pull_request_template"):
-            for candidate in self._list_repository_template_files(owner=owner, name=name, path=directory):
-                text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
-                if text is not None:
-                    return candidate, text
+        for parent_path in _PULL_REQUEST_TEMPLATE_PARENT_PATHS:
+            candidate = self._find_direct_pull_request_template_via_listing(
+                owner=owner,
+                name=name,
+                parent_path=parent_path,
+            )
+            if candidate is None:
+                continue
+            text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
+            if text is not None:
+                return candidate, text
+
+        seen_directories: set[str] = set()
+        for parent_path in _PULL_REQUEST_TEMPLATE_PARENT_PATHS:
+            for directory in self._list_pull_request_template_directories(
+                owner=owner,
+                name=name,
+                parent_path=parent_path,
+            ):
+                if directory in seen_directories:
+                    continue
+                seen_directories.add(directory)
+                for candidate in self._list_repository_template_files(owner=owner, name=name, path=directory):
+                    text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
+                    if text is not None:
+                        return candidate, text
 
         return None, None
 
     def _fetch_repository_text_file(self, *, owner: str, name: str, path: str) -> str | None:
-        api_path = f"repos/{owner}/{name}/contents/{quote(path, safe='/')}"
+        api_path = _build_repository_contents_api_path(owner=owner, name=name, path=path)
         try:
             payload = _run_command_json(
                 ["gh", "api", api_path],
@@ -1439,8 +1467,48 @@ mutation($id:ID!,$body:String!){
             return None
         return _decode_repository_contents_text(payload)
 
-    def _list_repository_template_files(self, *, owner: str, name: str, path: str) -> tuple[str, ...]:
-        api_path = f"repos/{owner}/{name}/contents/{quote(path, safe='/')}"
+    def _find_direct_pull_request_template_via_listing(
+        self,
+        *,
+        owner: str,
+        name: str,
+        parent_path: str,
+    ) -> str | None:
+        candidates: list[str] = []
+        for entry in self._list_repository_contents(owner=owner, name=name, path=parent_path):
+            if (_as_optional_str(entry.get("type")) or "") != "file":
+                continue
+            entry_name = _as_optional_str(entry.get("name")) or ""
+            if not _is_direct_pull_request_template_name(entry_name):
+                continue
+            candidate_path = _as_optional_str(entry.get("path")) or ""
+            if candidate_path:
+                candidates.append(candidate_path)
+        if not candidates:
+            return None
+        return sorted(candidates, key=str.casefold)[0]
+
+    def _list_pull_request_template_directories(
+        self,
+        *,
+        owner: str,
+        name: str,
+        parent_path: str,
+    ) -> tuple[str, ...]:
+        candidates: list[str] = []
+        for entry in self._list_repository_contents(owner=owner, name=name, path=parent_path):
+            if (_as_optional_str(entry.get("type")) or "") != "dir":
+                continue
+            entry_name = _as_optional_str(entry.get("name")) or ""
+            if not _is_pull_request_template_directory_name(entry_name):
+                continue
+            candidate_path = _as_optional_str(entry.get("path")) or ""
+            if candidate_path:
+                candidates.append(candidate_path)
+        return tuple(sorted(candidates, key=str.casefold))
+
+    def _list_repository_contents(self, *, owner: str, name: str, path: str) -> tuple[dict[str, object], ...]:
+        api_path = _build_repository_contents_api_path(owner=owner, name=name, path=path)
         try:
             payload = _run_command_json_any(
                 ["gh", "api", api_path],
@@ -1451,11 +1519,17 @@ mutation($id:ID!,$body:String!){
         except RuntimeError:
             return ()
 
-        candidates: list[str] = []
+        entries: list[dict[str, object]] = []
         for raw_entry in _as_list(payload):
             entry = _as_dict_optional(raw_entry)
             if entry is None:
                 continue
+            entries.append(entry)
+        return tuple(entries)
+
+    def _list_repository_template_files(self, *, owner: str, name: str, path: str) -> tuple[str, ...]:
+        candidates: list[str] = []
+        for entry in self._list_repository_contents(owner=owner, name=name, path=path):
             if (_as_optional_str(entry.get("type")) or "") != "file":
                 continue
             candidate_path = _as_optional_str(entry.get("path")) or ""
@@ -2320,6 +2394,24 @@ def _parse_repo_full_name(repo: str) -> tuple[str, str]:
     return owner, name
 
 
+_PULL_REQUEST_TEMPLATE_PARENT_PATHS = (".github", "", "docs")
+_DIRECT_PULL_REQUEST_TEMPLATE_FILENAMES = frozenset(
+    {
+        "pull_request_template.md",
+        "pull_request_template.markdown",
+        "pull_request_template.mdown",
+        "pull_request_template.txt",
+    }
+)
+
+
+def _build_repository_contents_api_path(*, owner: str, name: str, path: str) -> str:
+    base = f"repos/{owner}/{name}/contents"
+    if not path:
+        return base
+    return f"{base}/{quote(path, safe='/')}"
+
+
 def _decode_repository_contents_text(payload: dict[str, object]) -> str | None:
     encoding = _as_optional_str(payload.get("encoding"))
     content = _as_optional_str(payload.get("content"))
@@ -2329,8 +2421,16 @@ def _decode_repository_contents_text(payload: dict[str, object]) -> str | None:
     normalized = content.replace("\n", "")
     try:
         return base64.b64decode(normalized, validate=False).decode("utf-8", errors="replace")
-    except ValueError:
+    except (binascii.Error, ValueError):
         return None
+
+
+def _is_direct_pull_request_template_name(name: str) -> bool:
+    return name.casefold() in _DIRECT_PULL_REQUEST_TEMPLATE_FILENAMES
+
+
+def _is_pull_request_template_directory_name(name: str) -> bool:
+    return name.casefold() == "pull_request_template"
 
 
 def _is_pull_request_template_path(path: str) -> bool:

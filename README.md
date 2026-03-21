@@ -111,6 +111,7 @@ gh-llm pr body-template \
 ```
 
 If the repo has no PR template, `gh-llm` falls back to a simple editable scaffold.
+The bundled `skills/github-conversation/SKILL.md` also documents this workflow for skill users.
 
 ### Issue Reading
 

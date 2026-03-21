@@ -172,9 +172,6 @@ def register_pr_parser(subparsers: Any) -> None:
     body_template_parser.add_argument("--title", help="optional PR title used in the suggested `gh pr create` command")
     body_template_parser.add_argument(
         "--requirements",
-        "--requirement",
-        "--require-section",
-        dest="requirements",
         action="append",
         default=[],
         help="required body sections, comma-separated or repeatable",
