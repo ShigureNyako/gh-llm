@@ -192,7 +192,13 @@ def register_pr_parser(subparsers: Any) -> None:
 
     thread_reply_parser = pr_subparsers.add_parser("thread-reply", help="reply to a pull request review thread")
     thread_reply_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
-    thread_reply_parser.add_argument("--body", required=True, help="reply body")
+    thread_reply_body_group = thread_reply_parser.add_mutually_exclusive_group(required=True)
+    thread_reply_body_group.add_argument("--body", help="reply body")
+    thread_reply_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read reply body from file (use `-` to read from standard input)",
+    )
     thread_reply_parser.add_argument("--pr", help="PR number/url/branch")
     thread_reply_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_reply_parser.set_defaults(handler=cmd_pr_thread_reply)
@@ -279,7 +285,13 @@ def register_pr_parser(subparsers: Any) -> None:
         help="starting diff side for a multi-line range (defaults to --side)",
     )
     review_comment_parser.add_argument("--head", help="expected PR head sha for stale-snapshot protection")
-    review_comment_parser.add_argument("--body", required=True, help="review comment body")
+    review_comment_body_group = review_comment_parser.add_mutually_exclusive_group(required=True)
+    review_comment_body_group.add_argument("--body", help="review comment body")
+    review_comment_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read review comment body from file (use `-` to read from standard input)",
+    )
     review_comment_parser.add_argument("--pr", help="PR number/url/branch")
     review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_comment_parser.set_defaults(handler=cmd_pr_review_comment)
@@ -290,10 +302,16 @@ def register_pr_parser(subparsers: Any) -> None:
     review_suggest_parser.add_argument("--path", required=True, help="file path in pull request")
     review_suggest_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
     review_suggest_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
-    review_suggest_parser.add_argument(
+    review_suggest_body_group = review_suggest_parser.add_mutually_exclusive_group()
+    review_suggest_body_group.add_argument(
         "--body",
         default="Suggested change",
         help="review comment body before suggestion block",
+    )
+    review_suggest_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read review comment body from file (use `-` to read from standard input)",
     )
     review_suggest_parser.add_argument(
         "--suggestion",
@@ -332,11 +350,18 @@ def _read_body_file(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _resolve_review_submit_body(args: Any) -> str:
+def _resolve_body_argument(args: Any, *, default: str = "") -> str:
     body_file = getattr(args, "body_file", None)
     if body_file:
         return _read_body_file(str(body_file))
-    return str(getattr(args, "body", ""))
+    body = getattr(args, "body", None)
+    if body is None:
+        return default
+    return str(body)
+
+
+def _resolve_review_submit_body(args: Any) -> str:
+    return _resolve_body_argument(args)
 
 
 def cmd_pr_view(args: Any) -> int:
@@ -680,7 +705,8 @@ def cmd_pr_thread_reply(args: Any) -> int:
     if args.pr is not None:
         client.resolve_pull_request(selector=args.pr, repo=args.repo)
 
-    comment_id = client.reply_review_thread(thread_id=str(args.thread_id), body=str(args.body))
+    body = _resolve_body_argument(args)
+    comment_id = client.reply_review_thread(thread_id=str(args.thread_id), body=body)
     print(f"thread: {args.thread_id}")
     if comment_id:
         print(f"reply_comment_id: {comment_id}")
@@ -1046,7 +1072,7 @@ def cmd_pr_review_comment(args: Any) -> int:
         side=str(args.side),
         start_line=start_line,
         start_side=start_side,
-        body=str(args.body),
+        body=_resolve_body_argument(args),
     )
     print(f"thread: {thread_id}")
     if comment_id:
@@ -1071,7 +1097,8 @@ def cmd_pr_review_suggest(args: Any) -> int:
         start_side=start_side,
     )
     suggestion = str(args.suggestion).rstrip("\n")
-    full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
+    body = _resolve_body_argument(args, default="Suggested change")
+    full_body = f"{body.rstrip()}\n\n```suggestion\n{suggestion}\n```"
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
         ref=meta.ref,
         path=str(args.path),
