@@ -8,6 +8,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
 from typing import cast
 from urllib.parse import quote, urlparse
 
@@ -19,6 +20,9 @@ from gh_llm.models import (
     PullRequestDiffPage,
     PullRequestMeta,
     PullRequestRef,
+    RepoBranchProtection,
+    RepoDocument,
+    RepoPreflight,
     ReviewCommentSummary,
     ReviewThreadSummary,
     TimelineEvent,
@@ -840,6 +844,93 @@ class GitHubClient:
             reactions_summary=reactions_summary,
             can_edit_body=can_edit_body,
         )
+
+    def resolve_repo_preflight(self, repo: str) -> RepoPreflight:
+        fields = [
+            "nameWithOwner",
+            "description",
+            "homepageUrl",
+            "isFork",
+            "parent",
+            "url",
+            "sshUrl",
+            "viewerPermission",
+            "defaultBranchRef",
+        ]
+        payload = _run_command_json(["gh", "repo", "view", repo, "--json", ",".join(fields)])
+
+        name_with_owner = (_as_optional_str(payload.get("nameWithOwner")) or repo).strip()
+        if "/" not in name_with_owner:
+            raise RuntimeError(f"invalid repository identifier: {name_with_owner}")
+        owner, name = name_with_owner.split("/", 1)
+
+        default_branch_obj = _as_dict_optional(payload.get("defaultBranchRef"))
+        default_branch = _as_optional_str(default_branch_obj.get("name")) if default_branch_obj is not None else None
+        if not default_branch:
+            raise RuntimeError("failed to resolve default branch")
+
+        encoded_branch = quote(default_branch, safe="")
+        tree_payload = _run_command_json(["gh", "api", f"repos/{owner}/{name}/git/trees/{encoded_branch}?recursive=1"])
+        tree_items = _as_list(tree_payload.get("tree"))
+
+        parent_obj = _as_dict_optional(payload.get("parent"))
+        viewer_permission = _normalized_optional_str(payload.get("viewerPermission"))
+        can_push = viewer_permission in {"ADMIN", "MAINTAIN", "WRITE"}
+        branch_protection = self._resolve_default_branch_protection(
+            owner=owner,
+            name=name,
+            default_branch=default_branch,
+        )
+
+        return RepoPreflight(
+            owner=owner,
+            name=name,
+            url=_normalized_optional_str(payload.get("url")) or f"https://github.com/{owner}/{name}",
+            default_branch=default_branch,
+            ssh_url=_normalized_optional_str(payload.get("sshUrl")),
+            description=_normalized_optional_str(payload.get("description")),
+            homepage_url=_normalized_optional_str(payload.get("homepageUrl")),
+            viewer_permission=viewer_permission,
+            can_push=can_push,
+            fork_recommended=(not can_push),
+            is_fork=bool(payload.get("isFork")),
+            parent_repo=_normalized_optional_str(parent_obj.get("nameWithOwner")) if parent_obj is not None else None,
+            contributing_docs=_collect_repo_documents(tree_items, kind="contributing"),
+            agents_docs=_collect_repo_documents(tree_items, kind="agents"),
+            pr_templates=_collect_repo_documents(tree_items, kind="pr_template"),
+            codeowners_files=_collect_repo_documents(tree_items, kind="codeowners"),
+            branch_protection=branch_protection,
+        )
+
+    def _resolve_default_branch_protection(
+        self,
+        *,
+        owner: str,
+        name: str,
+        default_branch: str,
+    ) -> RepoBranchProtection | None:
+        query = """
+query($owner:String!,$name:String!){
+  repository(owner:$owner,name:$name){
+    branchProtectionRules(first:20){
+      nodes{
+        pattern
+        requiresStatusChecks
+        requiredStatusCheckContexts
+        requiresApprovingReviews
+        requiredApprovingReviewCount
+        requiresCodeOwnerReviews
+        isAdminEnforced
+      }
+    }
+  }
+}
+""".strip()
+        payload = _run_graphql_payload(query, {"owner": owner, "name": name})
+        data_obj = _as_dict(payload.get("data"), context="graphql data")
+        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+        rules_obj = _as_dict(repo_obj.get("branchProtectionRules"), context="branchProtectionRules")
+        return _select_branch_protection_rule(default_branch=default_branch, rules=_as_list(rules_obj.get("nodes")))
 
     def fetch_timeline_forward(
         self,
@@ -2759,6 +2850,93 @@ def _extract_label_names(payload: dict[str, object]) -> list[str]:
         if name:
             out.append(name)
     return out
+
+
+def _normalized_optional_str(value: object) -> str | None:
+    raw = _as_optional_str(value)
+    if raw is None:
+        return None
+    normalized = raw.strip()
+    return normalized or None
+
+
+def _collect_repo_documents(tree_items: list[object], *, kind: str) -> tuple[RepoDocument, ...]:
+    docs: list[RepoDocument] = []
+    seen: set[str] = set()
+    for raw_item in tree_items:
+        item = _as_dict_optional(raw_item)
+        if item is None:
+            continue
+        if (_as_optional_str(item.get("type")) or "") != "blob":
+            continue
+        path = _normalized_optional_str(item.get("path"))
+        if path is None or not _matches_repo_document_kind(path, kind=kind):
+            continue
+        normalized = path.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        docs.append(RepoDocument(path=path))
+    docs.sort(key=lambda item: item.path.lower())
+    return tuple(docs)
+
+
+def _matches_repo_document_kind(path: str, *, kind: str) -> bool:
+    normalized = path.lower()
+    base_name = normalized.rsplit("/", 1)[-1]
+    if kind == "contributing":
+        return base_name == "contributing" or base_name.startswith("contributing.")
+    if kind == "agents":
+        return base_name == "agents.md"
+    if kind == "codeowners":
+        return base_name == "codeowners"
+    if kind == "pr_template":
+        if base_name == "pull_request_template" or base_name.startswith("pull_request_template."):
+            return True
+        return "/pull_request_template/" in normalized
+    raise RuntimeError(f"unknown repository document kind: {kind}")
+
+
+def _select_branch_protection_rule(default_branch: str, rules: list[object]) -> RepoBranchProtection | None:
+    candidates: list[tuple[tuple[int, int, int], RepoBranchProtection]] = []
+    for raw_rule in rules:
+        rule = _as_dict_optional(raw_rule)
+        if rule is None:
+            continue
+        pattern = _normalized_optional_str(rule.get("pattern"))
+        if pattern is None or not fnmatchcase(default_branch, pattern):
+            continue
+        contexts = tuple(
+            context
+            for raw_context in _as_list(rule.get("requiredStatusCheckContexts"))
+            if (context := _normalized_optional_str(raw_context)) is not None
+        )
+        summary = RepoBranchProtection(
+            pattern=pattern,
+            requires_status_checks=bool(rule.get("requiresStatusChecks")),
+            required_status_check_contexts=contexts,
+            requires_approving_reviews=bool(rule.get("requiresApprovingReviews")),
+            required_approving_review_count=(
+                None
+                if rule.get("requiredApprovingReviewCount") is None
+                else _as_int_default(rule.get("requiredApprovingReviewCount"), default=0)
+            ),
+            requires_code_owner_reviews=bool(rule.get("requiresCodeOwnerReviews")),
+            is_admin_enforced=bool(rule.get("isAdminEnforced")),
+        )
+        candidates.append((_branch_protection_specificity(pattern, default_branch), summary))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def _branch_protection_specificity(pattern: str, default_branch: str) -> tuple[int, int, int]:
+    is_exact = 0 if pattern == default_branch else 1
+    wildcard_count = pattern.count("*") + pattern.count("?")
+    return (is_exact, wildcard_count, -len(pattern))
 
 
 def _parse_conflict_files_from_git_output(output: str) -> list[str]:

@@ -96,6 +96,43 @@ class CheckItem:
 
 
 @dataclass(frozen=True)
+class RepoDocument:
+    path: str
+
+
+@dataclass(frozen=True)
+class RepoBranchProtection:
+    pattern: str
+    requires_status_checks: bool = False
+    required_status_check_contexts: tuple[str, ...] = ()
+    requires_approving_reviews: bool = False
+    required_approving_review_count: int | None = None
+    requires_code_owner_reviews: bool = False
+    is_admin_enforced: bool = False
+
+
+@dataclass(frozen=True)
+class RepoPreflight:
+    owner: str
+    name: str
+    url: str
+    default_branch: str
+    ssh_url: str | None = None
+    description: str | None = None
+    homepage_url: str | None = None
+    viewer_permission: str | None = None
+    can_push: bool = False
+    fork_recommended: bool = False
+    is_fork: bool = False
+    parent_repo: str | None = None
+    contributing_docs: tuple[RepoDocument, ...] = ()
+    agents_docs: tuple[RepoDocument, ...] = ()
+    pr_templates: tuple[RepoDocument, ...] = ()
+    codeowners_files: tuple[RepoDocument, ...] = ()
+    branch_protection: RepoBranchProtection | None = None
+
+
+@dataclass(frozen=True)
 class PullRequestDiffFile:
     path: str
     status: str
