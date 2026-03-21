@@ -12,6 +12,64 @@ if TYPE_CHECKING:
 DEFAULT_PAGE_SIZE = 8
 
 
+def build_context_from_meta(
+    meta: PullRequestMeta,
+    page_size: int,
+    *,
+    total_count: int | None = None,
+    total_pages: int | None = None,
+) -> TimelineContext:
+    _validate_page_size(page_size)
+
+    timeline_loaded = total_count is not None and total_pages is not None
+    resolved_total_count = 0 if total_count is None else total_count
+    resolved_total_pages = 0 if total_pages is None else total_pages
+
+    return TimelineContext(
+        owner=meta.ref.owner,
+        name=meta.ref.name,
+        number=meta.ref.number,
+        page_size=page_size,
+        total_count=resolved_total_count,
+        total_pages=resolved_total_pages,
+        title=meta.title,
+        url=meta.url,
+        author=meta.author,
+        state=meta.state,
+        is_draft=meta.is_draft,
+        body=meta.body,
+        updated_at=meta.updated_at,
+        timeline_loaded=timeline_loaded,
+        labels=meta.labels,
+        kind=meta.kind,
+        pr_reactions_summary=meta.reactions_summary,
+        can_edit_pr_body=meta.can_edit_body,
+        is_merged=meta.is_merged,
+        head_ref_name=meta.head_ref_name,
+        head_ref_repo=meta.head_ref_repo,
+        head_ref_oid=meta.head_ref_oid,
+        head_ref_deleted=meta.head_ref_deleted,
+        pr_node_id=meta.node_id,
+        merge_state_status=meta.merge_state_status,
+        mergeable=meta.mergeable,
+        review_decision=meta.review_decision,
+        requires_approving_reviews=meta.requires_approving_reviews,
+        required_approving_review_count=meta.required_approving_review_count,
+        requires_code_owner_reviews=meta.requires_code_owner_reviews,
+        approved_review_count=meta.approved_review_count,
+        requires_status_checks=meta.requires_status_checks,
+        base_ref_name=meta.base_ref_name,
+        base_ref_oid=meta.base_ref_oid,
+        merge_commit_allowed=meta.merge_commit_allowed,
+        squash_merge_allowed=meta.squash_merge_allowed,
+        rebase_merge_allowed=meta.rebase_merge_allowed,
+        co_author_trailers=meta.co_author_trailers,
+        conflict_files=meta.conflict_files,
+        forward_after_by_page=({1: None} if timeline_loaded else {}),
+        backward_before_by_page=({resolved_total_pages: None} if timeline_loaded else {}),
+    )
+
+
 class TimelinePager:
     def __init__(self, client: GitHubClient) -> None:
         self._client = client
@@ -45,47 +103,11 @@ class TimelinePager:
         total_count = first_page.total_count
         total_pages = _page_count(total_count, page_size)
 
-        context = TimelineContext(
-            owner=meta.ref.owner,
-            name=meta.ref.name,
-            number=meta.ref.number,
+        context = build_context_from_meta(
+            meta=meta,
             page_size=page_size,
             total_count=total_count,
             total_pages=total_pages,
-            title=meta.title,
-            url=meta.url,
-            author=meta.author,
-            state=meta.state,
-            is_draft=meta.is_draft,
-            body=meta.body,
-            updated_at=meta.updated_at,
-            labels=meta.labels,
-            kind=meta.kind,
-            pr_reactions_summary=meta.reactions_summary,
-            can_edit_pr_body=meta.can_edit_body,
-            is_merged=meta.is_merged,
-            head_ref_name=meta.head_ref_name,
-            head_ref_repo=meta.head_ref_repo,
-            head_ref_oid=meta.head_ref_oid,
-            head_ref_deleted=meta.head_ref_deleted,
-            pr_node_id=meta.node_id,
-            merge_state_status=meta.merge_state_status,
-            mergeable=meta.mergeable,
-            review_decision=meta.review_decision,
-            requires_approving_reviews=meta.requires_approving_reviews,
-            required_approving_review_count=meta.required_approving_review_count,
-            requires_code_owner_reviews=meta.requires_code_owner_reviews,
-            approved_review_count=meta.approved_review_count,
-            requires_status_checks=meta.requires_status_checks,
-            base_ref_name=meta.base_ref_name,
-            base_ref_oid=meta.base_ref_oid,
-            merge_commit_allowed=meta.merge_commit_allowed,
-            squash_merge_allowed=meta.squash_merge_allowed,
-            rebase_merge_allowed=meta.rebase_merge_allowed,
-            co_author_trailers=meta.co_author_trailers,
-            conflict_files=meta.conflict_files,
-            forward_after_by_page={1: None},
-            backward_before_by_page={total_pages: None},
         )
         self._remember_forward(context, page=1, cursor_used=None, page_result=first_page)
 

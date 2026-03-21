@@ -609,6 +609,91 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "END_MARKER" in out
 
 
+def test_pr_view_show_meta_skips_timeline_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--show", "meta"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "pr: 77928" in out
+    assert "timeline_events:" not in out
+    assert "## Timeline" not in out
+    assert "## Checks" not in out
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert any("headRefName" in query and "timelineItems" not in query for query in graphql_queries)
+    assert not any("timelineItems(" in query for query in graphql_queries)
+    assert not any("reviewThreads(first:100" in query for query in graphql_queries)
+    assert not any("statusCheckRollup" in query for query in graphql_queries)
+
+
+def test_pr_view_show_checks_fetches_checks_without_timeline_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--show", "checks"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "## Checks" in out
+    assert "[IN_PROGRESS/NONE] unit-tests (check-run)" in out
+    assert "## Timeline" not in out
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert any("statusCheckRollup" in query for query in graphql_queries)
+    assert not any("timelineItems(" in query for query in graphql_queries)
+    assert not any("reviewThreads(first:100" in query for query in graphql_queries)
+
+
+def test_pr_checks_command_skips_timeline_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(["pr", "checks", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--all"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "## Checks" in out
+    assert "[COMPLETED/SUCCESS] lint (check-run)" in out
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert any("statusCheckRollup" in query for query in graphql_queries)
+    assert not any("timelineItems(" in query for query in graphql_queries)
+    assert not any("reviewThreads(first:100" in query for query in graphql_queries)
+
+
+def test_pr_view_show_mergeability_fetches_status_without_timeline_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(["pr", "view", "77971", "--repo", "PaddlePaddle/Paddle", "--show", "mergeability"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "## Mergeability" in out
+    assert "Status: Merging is blocked" in out
+    assert "## Timeline" not in out
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert any("statusCheckRollup" in query for query in graphql_queries)
+    assert not any("timelineItems(" in query for query in graphql_queries)
+    assert not any("reviewThreads(first:100" in query for query in graphql_queries)
+
+
 def test_web_like_extra_timeline_events_are_rendered(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
