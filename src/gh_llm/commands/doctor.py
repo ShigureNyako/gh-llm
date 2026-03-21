@@ -57,12 +57,6 @@ def register_doctor_parser(subparsers: Any) -> None:
     )
     doctor_parser.set_defaults(handler=cmd_doctor)
 
-    env_parser = subparsers.add_parser(
-        "env",
-        help="alias of `doctor`",
-    )
-    env_parser.set_defaults(handler=cmd_doctor)
-
 
 def cmd_doctor(_: Any) -> int:
     entrypoint = display_command()

@@ -452,12 +452,6 @@ def test_doctor_reports_entrypoint_probes_and_env(
     assert "- GraphQL viewer probe (`gh api graphql -f query='query{viewer{login}}'`): ok (@ShigureNyako)" in out
     assert "status: ok" in out
 
-    alias_code = cli.run(["env"])
-    assert alias_code == 0
-    alias_out = capsys.readouterr().out
-    assert "## Entrypoint" in alias_out
-    assert "## Summary" in alias_out
-
 
 def test_doctor_scopes_auth_status_to_target_host(
     monkeypatch: pytest.MonkeyPatch,

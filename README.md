@@ -138,8 +138,6 @@ gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 ```bash
 gh-llm doctor
 gh llm doctor
-# alias
-gh-llm env
 ```
 
 `doctor` prints the current entrypoint, resolved executable paths, `gh` / `gh-llm` versions,
