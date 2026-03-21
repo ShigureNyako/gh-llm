@@ -115,21 +115,8 @@ class GhResponder:
             )
 
         if cmd[:3] == ["gh", "repo", "view"]:
-            return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "nameWithOwner": "PaddlePaddle/Paddle",
-                        "description": "PaddlePaddle core framework",
-                        "homepageUrl": "https://www.paddlepaddle.org.cn/",
-                        "isFork": False,
-                        "parent": None,
-                        "url": "https://github.com/PaddlePaddle/Paddle",
-                        "sshUrl": "git@github.com:PaddlePaddle/Paddle.git",
-                        "viewerPermission": "READ",
-                        "defaultBranchRef": {"name": "develop"},
-                    }
-                )
-            )
+            repo = cmd[3] if len(cmd) > 3 else "PaddlePaddle/Paddle"
+            return FakeCompletedProcess(json.dumps(_repo_view_payload(repo)))
 
         if cmd[:3] == ["gh", "api", "user"]:
             return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
@@ -138,7 +125,7 @@ class GhResponder:
             return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
 
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/git/trees/" in cmd[2]:
-            return FakeCompletedProcess(json.dumps(_repo_tree_payload()))
+            return FakeCompletedProcess(json.dumps(_repo_tree_payload(cmd[2])))
 
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/branches/" in cmd[2]:
             payload = _repo_branch_payload(cmd[2])
@@ -2345,6 +2332,27 @@ def test_repo_preflight_warns_on_truncated_tree_and_detects_contributing_prefix(
     assert "gh browse -R PaddlePaddle/Paddle --branch develop 'CONTRIBUTING_GUIDE.md'" in out
 
 
+def test_repo_preflight_surfaces_parent_repo_and_targets_upstream_pr_for_forks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "ShigureNyako/gh-llm"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "repo: ShigureNyako/gh-llm" in out
+    assert "is_fork: true" in out
+    assert "parent_repo: ShigureLab/gh-llm" in out
+    assert "Parent repo: `ShigureLab/gh-llm`" in out
+    assert "gh pr create --repo ShigureLab/gh-llm --base main" in out
+    assert "gh pr create --repo ShigureNyako/gh-llm --base main" not in out
+
+
 def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
     del after
     return {
@@ -2378,7 +2386,45 @@ def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
     }
 
 
-def _repo_tree_payload() -> dict[str, Any]:
+def _repo_view_payload(repo: str) -> dict[str, Any]:
+    if repo == "ShigureNyako/gh-llm":
+        return {
+            "nameWithOwner": "ShigureNyako/gh-llm",
+            "description": "Forked gh-llm workspace",
+            "homepageUrl": "",
+            "isFork": True,
+            "parent": {
+                "name": "gh-llm",
+                "owner": {"login": "ShigureLab"},
+            },
+            "url": "https://github.com/ShigureNyako/gh-llm",
+            "sshUrl": "git@github.com:ShigureNyako/gh-llm.git",
+            "viewerPermission": "ADMIN",
+            "defaultBranchRef": {"name": "main"},
+        }
+    return {
+        "nameWithOwner": "PaddlePaddle/Paddle",
+        "description": "PaddlePaddle core framework",
+        "homepageUrl": "https://www.paddlepaddle.org.cn/",
+        "isFork": False,
+        "parent": None,
+        "url": "https://github.com/PaddlePaddle/Paddle",
+        "sshUrl": "git@github.com:PaddlePaddle/Paddle.git",
+        "viewerPermission": "READ",
+        "defaultBranchRef": {"name": "develop"},
+    }
+
+
+def _repo_tree_payload(path: str) -> dict[str, Any]:
+    if "repos/ShigureNyako/gh-llm/" in path:
+        return {
+            "sha": "mock-tree-sha",
+            "truncated": False,
+            "tree": [
+                {"path": "README.md", "type": "blob"},
+                {"path": "skills/github-conversation/SKILL.md", "type": "blob"},
+            ],
+        }
     return {
         "sha": "mock-tree-sha",
         "truncated": False,
@@ -2396,6 +2442,19 @@ def _repo_tree_payload() -> dict[str, Any]:
 def _repo_branch_payload(path: str) -> dict[str, Any] | None:
     if "/branches/" not in path:
         return None
+    if "repos/ShigureNyako/gh-llm/branches/main" in path:
+        return {
+            "name": "main",
+            "protected": False,
+            "protection": {
+                "enabled": False,
+                "required_status_checks": {
+                    "enforcement_level": "off",
+                    "contexts": [],
+                    "checks": [],
+                },
+            },
+        }
     return {
         "name": "develop",
         "protected": True,

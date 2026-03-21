@@ -887,6 +887,8 @@ class GitHubClient:
         parent_obj = _as_dict_optional(payload.get("parent"))
         viewer_permission = _normalized_optional_str(payload.get("viewerPermission"))
         can_push = viewer_permission in {"ADMIN", "MAINTAIN", "WRITE"}
+        is_fork = bool(payload.get("isFork"))
+        parent_repo = _extract_parent_repo_full_name(parent_obj)
         branch_protection = self._resolve_default_branch_protection(
             owner=owner,
             name=name,
@@ -904,8 +906,8 @@ class GitHubClient:
             viewer_permission=viewer_permission,
             can_push=can_push,
             fork_recommended=(not can_push),
-            is_fork=bool(payload.get("isFork")),
-            parent_repo=_normalized_optional_str(parent_obj.get("nameWithOwner")) if parent_obj is not None else None,
+            is_fork=is_fork,
+            parent_repo=parent_repo,
             tree_truncated=tree_truncated,
             contributing_docs=_collect_repo_documents(tree_items, kind="contributing"),
             agents_docs=_collect_repo_documents(tree_items, kind="agents"),
@@ -3196,6 +3198,26 @@ def _normalized_optional_str(value: object) -> str | None:
         return None
     normalized = raw.strip()
     return normalized or None
+
+
+def _extract_parent_repo_full_name(parent_obj: dict[str, object] | None) -> str | None:
+    if parent_obj is None:
+        return None
+
+    direct = _normalized_optional_str(parent_obj.get("nameWithOwner"))
+    if direct is not None:
+        return direct
+
+    full_name = _normalized_optional_str(parent_obj.get("full_name"))
+    if full_name is not None:
+        return full_name
+
+    owner_obj = _as_dict_optional(parent_obj.get("owner"))
+    owner_login = _normalized_optional_str(owner_obj.get("login")) if owner_obj is not None else None
+    name = _normalized_optional_str(parent_obj.get("name"))
+    if owner_login is not None and name is not None:
+        return f"{owner_login}/{name}"
+    return None
 
 
 def _collect_repo_documents(tree_items: list[object], *, kind: str) -> tuple[RepoDocument, ...]:

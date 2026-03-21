@@ -184,6 +184,7 @@ def render_repo_branch_protection(preflight: RepoPreflight) -> list[str]:
 
 def render_repo_next_commands(preflight: RepoPreflight) -> list[str]:
     repo = f"{preflight.owner}/{preflight.name}"
+    pr_target_repo = preflight.parent_repo if preflight.is_fork and preflight.parent_repo is not None else repo
     lines = [
         "## Next Commands",
         "These commands are inferred from the permission, onboarding-file, and default-branch protection signals above.",
@@ -213,14 +214,17 @@ def render_repo_next_commands(preflight: RepoPreflight) -> list[str]:
         )
         step += 1
 
-    lines.append(f"{step}. Open your PR against the default branch:")
-    lines.append(f"   ⏎ `gh pr create --repo {repo} --base {preflight.default_branch}`")
+    if pr_target_repo != repo:
+        lines.append(f"{step}. Open your PR against the parent repository:")
+    else:
+        lines.append(f"{step}. Open your PR against the default branch:")
+    lines.append(f"   ⏎ `gh pr create --repo {pr_target_repo} --base {preflight.default_branch}`")
     step += 1
 
     protection = preflight.branch_protection
     if protection is not None and protection.requires_status_checks:
         lines.append(f"{step}. Check required CI after the PR exists:")
-        lines.append(f"   ⏎ `{display_command_with(f'pr checks --pr <pr_number> --repo {repo}')}`")
+        lines.append(f"   ⏎ `{display_command_with(f'pr checks --pr <pr_number> --repo {pr_target_repo}')}`")
 
     lines.append("")
     return lines
