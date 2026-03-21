@@ -1403,21 +1403,7 @@ mutation($id:ID!,$body:String!){
 
     def fetch_pull_request_template(self, repo: str) -> tuple[str | None, str | None]:
         owner, name = _parse_repo_full_name(repo)
-        direct_candidates = (
-            ".github/PULL_REQUEST_TEMPLATE.md",
-            ".github/pull_request_template.md",
-            ".github/PULL_REQUEST_TEMPLATE.txt",
-            ".github/pull_request_template.txt",
-            "PULL_REQUEST_TEMPLATE.md",
-            "pull_request_template.md",
-            "PULL_REQUEST_TEMPLATE.txt",
-            "pull_request_template.txt",
-            "docs/PULL_REQUEST_TEMPLATE.md",
-            "docs/pull_request_template.md",
-            "docs/PULL_REQUEST_TEMPLATE.txt",
-            "docs/pull_request_template.txt",
-        )
-        for candidate in direct_candidates:
+        for candidate in _iter_direct_pull_request_template_candidate_paths():
             text = self._fetch_repository_text_file(owner=owner, name=name, path=candidate)
             if text is not None:
                 return candidate, text
@@ -2395,13 +2381,12 @@ def _parse_repo_full_name(repo: str) -> tuple[str, str]:
 
 
 _PULL_REQUEST_TEMPLATE_PARENT_PATHS = (".github", "", "docs")
+_DIRECT_PULL_REQUEST_TEMPLATE_BASENAME_VARIANTS = ("PULL_REQUEST_TEMPLATE", "pull_request_template")
+_PULL_REQUEST_TEMPLATE_FILE_SUFFIXES = (".md", ".txt", ".markdown", ".mdown")
 _DIRECT_PULL_REQUEST_TEMPLATE_FILENAMES = frozenset(
-    {
-        "pull_request_template.md",
-        "pull_request_template.markdown",
-        "pull_request_template.mdown",
-        "pull_request_template.txt",
-    }
+    f"{basename}{suffix}".casefold()
+    for basename in _DIRECT_PULL_REQUEST_TEMPLATE_BASENAME_VARIANTS
+    for suffix in _PULL_REQUEST_TEMPLATE_FILE_SUFFIXES
 )
 
 
@@ -2410,6 +2395,21 @@ def _build_repository_contents_api_path(*, owner: str, name: str, path: str) -> 
     if not path:
         return base
     return f"{base}/{quote(path, safe='/')}"
+
+
+def _build_repository_relative_path(*, parent_path: str, child_name: str) -> str:
+    if not parent_path:
+        return child_name
+    return f"{parent_path}/{child_name}"
+
+
+def _iter_direct_pull_request_template_candidate_paths() -> tuple[str, ...]:
+    return tuple(
+        _build_repository_relative_path(parent_path=parent_path, child_name=f"{basename}{suffix}")
+        for parent_path in _PULL_REQUEST_TEMPLATE_PARENT_PATHS
+        for basename in _DIRECT_PULL_REQUEST_TEMPLATE_BASENAME_VARIANTS
+        for suffix in _PULL_REQUEST_TEMPLATE_FILE_SUFFIXES
+    )
 
 
 def _decode_repository_contents_text(payload: dict[str, object]) -> str | None:
