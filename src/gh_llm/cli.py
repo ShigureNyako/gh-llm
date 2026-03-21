@@ -5,12 +5,14 @@ import shlex
 import sys
 
 from gh_llm import __version__
+from gh_llm.commands.doctor import register_doctor_parser
 from gh_llm.commands.issue import register_issue_parser
 from gh_llm.commands.pr import (
     parse_event_indexes as _parse_event_indexes,
     parse_review_ids as _parse_review_ids,
     register_pr_parser,
 )
+from gh_llm.diagnostics import GhCommandError, format_command_error
 from gh_llm.invocation import detect_prog_name
 
 
@@ -25,6 +27,10 @@ def run(argv: list[str]) -> int:
 
     try:
         return int(handler(args))
+    except GhCommandError as error:
+        for line in format_command_error(error):
+            print(line, file=sys.stderr)
+        return 1
     except (RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -54,6 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     register_pr_parser(subparsers)
     register_issue_parser(subparsers)
+    register_doctor_parser(subparsers)
 
     return parser
 

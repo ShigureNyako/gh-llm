@@ -8,7 +8,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
-from gh_llm.commands import pr as pr_commands
+from gh_llm.commands import doctor as doctor_commands, pr as pr_commands
 from gh_llm.models import ReviewThreadSummary
 
 if TYPE_CHECKING:
@@ -403,6 +403,58 @@ class GhResponder:
 
 def test_version() -> None:
     assert __version__ == "0.1.11"
+
+
+def test_doctor_reports_entrypoint_probes_and_env(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fake_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        del check, capture_output, text
+        if cmd == ["gh", "llm", "--version"]:
+            return FakeCompletedProcess("0.1.11\n")
+        if cmd == ["gh", "--version"]:
+            return FakeCompletedProcess("gh version 2.76.0\nhttps://github.com/cli/cli/releases/tag/v2.76.0\n")
+        if cmd == ["gh", "auth", "status"]:
+            return FakeCompletedProcess("github.com\n  ✓ Logged in to github.com account ShigureNyako\n")
+        if cmd == ["gh", "api", "user"]:
+            return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return FakeCompletedProcess(json.dumps({"data": {"viewer": {"login": "ShigureNyako"}}}))
+        return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
+
+    def fake_which(name: str) -> str | None:
+        mapping = {
+            "gh": "/opt/homebrew/bin/gh",
+            "gh-llm": "/Users/test/bin/gh-llm",
+        }
+        return mapping.get(name)
+
+    monkeypatch.setattr(doctor_commands.subprocess, "run", fake_run)
+    monkeypatch.setattr(doctor_commands.shutil, "which", fake_which)
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+    monkeypatch.setenv("https_proxy", "http://proxy.example.test:8443")
+    monkeypatch.setenv("GH_TOKEN", "secret-token")
+    monkeypatch.setattr(sys, "argv", ["gh-llm"])
+
+    code = cli.run(["doctor"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "- entrypoint: gh llm" in out
+    assert "- entrypoint_path: /opt/homebrew/bin/gh" in out
+    assert "- gh_llm_path: /Users/test/bin/gh-llm" in out
+    assert "- https_proxy: http://proxy.example.test:8443" in out
+    assert "- GH_TOKEN: (set)" in out
+    assert "- entrypoint version (`gh llm --version`): 0.1.11" in out
+    assert "- REST user probe (`gh api user`): ok (@ShigureNyako)" in out
+    assert "- GraphQL viewer probe (`gh api graphql -f query='query{viewer{login}}'`): ok (@ShigureNyako)" in out
+    assert "status: ok" in out
+
+    alias_code = cli.run(["env"])
+    assert alias_code == 0
+    alias_out = capsys.readouterr().out
+    assert "## Entrypoint" in alias_out
+    assert "## Summary" in alias_out
 
 
 def test_parse_event_indexes_batch() -> None:
@@ -1694,6 +1746,38 @@ def test_graphql_eof_retries_with_backoff(
     out = capsys.readouterr().out
     assert "### Page 1/4" in out
     assert state["failed_once"] is True
+
+
+def test_graphql_eof_failure_prints_layered_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def failing_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return FakeCompletedProcess("", returncode=1, stderr='Post "https://api.github.com/graphql": EOF')
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(github_api.subprocess, "run", failing_run)
+    monkeypatch.setattr(github_api.time, "sleep", no_sleep)
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "error: GitHub GraphQL request failed after 4 attempts." in err
+    assert 'Last error: Post "https://api.github.com/graphql": EOF' in err
+    assert "Category: GraphQL transport / network" in err
+    assert "Command: gh api graphql" in err
+    assert "Try next:" in err
+    assert "- gh auth status" in err
+    assert "- gh api user" in err
+    assert "- gh api graphql -f query='query{viewer{login}}'" in err
+    assert "- gh llm doctor" in err
 
 
 def test_pr_review_submit_supports_body_file(
