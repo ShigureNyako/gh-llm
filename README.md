@@ -143,7 +143,7 @@ gh-llm env
 ```
 
 `doctor` prints the current entrypoint, resolved executable paths, `gh` / `gh-llm` versions,
-`gh auth status`, a REST probe, a minimal GraphQL probe, and proxy-related environment variables.
+active-host `gh auth status`, a REST probe, a minimal GraphQL probe, and proxy-related environment variables.
 
 When `gh-llm` hits transport errors such as GraphQL `EOF` / timeout failures, the CLI now reports the
 retry count and suggests concrete follow-up commands such as `gh auth status`,

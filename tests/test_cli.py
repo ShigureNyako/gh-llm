@@ -415,7 +415,7 @@ def test_doctor_reports_entrypoint_probes_and_env(
             return FakeCompletedProcess("0.1.11\n")
         if cmd == ["gh", "--version"]:
             return FakeCompletedProcess("gh version 2.76.0\nhttps://github.com/cli/cli/releases/tag/v2.76.0\n")
-        if cmd == ["gh", "auth", "status"]:
+        if cmd == ["gh", "auth", "status", "--active", "--hostname", "github.com"]:
             return FakeCompletedProcess("github.com\n  ✓ Logged in to github.com account ShigureNyako\n")
         if cmd == ["gh", "api", "user"]:
             return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
@@ -443,9 +443,11 @@ def test_doctor_reports_entrypoint_probes_and_env(
     assert "- entrypoint: gh llm" in out
     assert "- entrypoint_path: /opt/homebrew/bin/gh" in out
     assert "- gh_llm_path: /Users/test/bin/gh-llm" in out
+    assert "- target_host: github.com" in out
     assert "- https_proxy: http://proxy.example.test:8443" in out
     assert "- GH_TOKEN: (set)" in out
     assert "- entrypoint version (`gh llm --version`): 0.1.11" in out
+    assert "- auth status (`gh auth status --active --hostname github.com`): ok" in out
     assert "- REST user probe (`gh api user`): ok (@ShigureNyako)" in out
     assert "- GraphQL viewer probe (`gh api graphql -f query='query{viewer{login}}'`): ok (@ShigureNyako)" in out
     assert "status: ok" in out
@@ -455,6 +457,44 @@ def test_doctor_reports_entrypoint_probes_and_env(
     alias_out = capsys.readouterr().out
     assert "## Entrypoint" in alias_out
     assert "## Summary" in alias_out
+
+
+def test_doctor_scopes_auth_status_to_target_host(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        del check, capture_output, text
+        calls.append(cmd)
+        if cmd == ["gh", "llm", "--version"]:
+            return FakeCompletedProcess("0.1.11\n")
+        if cmd == ["gh", "--version"]:
+            return FakeCompletedProcess("gh version 2.76.0\n")
+        if cmd == ["gh", "auth", "status", "--active", "--hostname", "github.example.com"]:
+            return FakeCompletedProcess("github.example.com\n  ✓ Logged in to github.example.com account neko\n")
+        if cmd == ["gh", "api", "user"]:
+            return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            return FakeCompletedProcess(json.dumps({"data": {"viewer": {"login": "ShigureNyako"}}}))
+        if cmd == ["gh", "auth", "status"]:
+            return FakeCompletedProcess("expired other host", returncode=1, stderr="expired other host")
+        return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
+
+    monkeypatch.setattr(doctor_commands.subprocess, "run", fake_run)
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+    monkeypatch.setenv("GH_HOST", "github.example.com")
+    monkeypatch.setattr(sys, "argv", ["gh-llm"])
+
+    code = cli.run(["doctor"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "- target_host: github.example.com" in out
+    assert "gh auth status --active --hostname github.example.com" in out
+    assert ["gh", "auth", "status", "--active", "--hostname", "github.example.com"] in calls
+    assert ["gh", "auth", "status"] not in calls
+
 
 
 def test_parse_event_indexes_batch() -> None:
@@ -1778,6 +1818,68 @@ def test_graphql_eof_failure_prints_layered_diagnostics(
     assert "- gh api user" in err
     assert "- gh api graphql -f query='query{viewer{login}}'" in err
     assert "- gh llm doctor" in err
+
+
+def test_pr_view_graphql_transport_error_uses_layered_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = {"attempts": 0}
+
+    def failing_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        del check, capture_output, text
+        if cmd[:3] == ["gh", "pr", "view"]:
+            state["attempts"] += 1
+            return FakeCompletedProcess("", returncode=1, stderr='Post "https://api.github.com/graphql": EOF')
+        return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
+
+    def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(github_api.subprocess, "run", failing_run)
+    monkeypatch.setattr(github_api.time, "sleep", no_sleep)
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+
+    code = cli.run(["pr", "view", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 1
+    assert state["attempts"] == 4
+    err = capsys.readouterr().err
+    assert "error: GitHub GraphQL request failed after 4 attempts." in err
+    assert "Category: GraphQL transport / network" in err
+    assert "Command: gh pr view" in err
+    assert "- gh llm doctor" in err
+
+
+
+def test_issue_view_graphql_transport_error_uses_layered_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = {"attempts": 0}
+
+    def failing_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
+        del check, capture_output, text
+        if cmd[:3] == ["gh", "issue", "view"]:
+            state["attempts"] += 1
+            return FakeCompletedProcess("", returncode=1, stderr='Post "https://api.github.com/graphql": EOF')
+        return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
+
+    def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(github_api.subprocess, "run", failing_run)
+    monkeypatch.setattr(github_api.time, "sleep", no_sleep)
+    monkeypatch.setenv("GH_LLM_DISPLAY_CMD", "gh llm")
+
+    code = cli.run(["issue", "view", "77924", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 1
+    assert state["attempts"] == 4
+    err = capsys.readouterr().err
+    assert "error: GitHub GraphQL request failed after 4 attempts." in err
+    assert "Category: GraphQL transport / network" in err
+    assert "Command: gh issue view" in err
+    assert "- gh llm doctor" in err
+
 
 
 def test_pr_review_submit_supports_body_file(

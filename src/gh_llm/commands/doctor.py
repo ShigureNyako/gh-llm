@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from typing import Any
 
 _GRAPHQL_PROBE_QUERY = "query{viewer{login}}"
+_DEFAULT_TARGET_HOST = "github.com"
 _ENV_KEYS = (
     "GH_LLM_DISPLAY_CMD",
     "GH_HOST",
@@ -66,10 +67,11 @@ def register_doctor_parser(subparsers: Any) -> None:
 def cmd_doctor(_: Any) -> int:
     entrypoint = display_command()
     argv0 = detect_prog_name(sys.argv[0])
+    target_host = _resolve_target_host()
     critical_probes = (
         _probe_entrypoint_version(entrypoint),
         _probe_gh_version(),
-        _probe_auth_status(),
+        _probe_auth_status(target_host),
         _probe_rest_user(),
         _probe_graphql_viewer(),
     )
@@ -83,6 +85,7 @@ def cmd_doctor(_: Any) -> int:
         f"- entrypoint_path: {_resolve_entrypoint_path(entrypoint)}",
         f"- gh_path: {_resolve_binary_path('gh')}",
         f"- gh_llm_path: {_resolve_binary_path('gh-llm')}",
+        f"- target_host: {target_host}",
         f"- python: {sys.executable}",
         f"- cwd: {Path.cwd()}",
         "",
@@ -167,8 +170,8 @@ def _probe_gh_version() -> _ProbeResult:
     )
 
 
-def _probe_auth_status() -> _ProbeResult:
-    command = ["gh", "auth", "status"]
+def _probe_auth_status(target_host: str) -> _ProbeResult:
+    command = ["gh", "auth", "status", "--active", "--hostname", target_host]
     result = _run_command(command)
     summary = "ok" if result.ok else "failed"
     return _ProbeResult(
@@ -295,6 +298,11 @@ def _resolve_entrypoint_path(entrypoint: str) -> str:
 def _resolve_binary_path(name: str) -> str:
     resolved = shutil.which(name)
     return resolved or "(not found)"
+
+
+def _resolve_target_host() -> str:
+    raw = os.environ.get("GH_HOST", "").strip()
+    return raw or _DEFAULT_TARGET_HOST
 
 
 def _format_env_value(key: str, value: str | None) -> str:

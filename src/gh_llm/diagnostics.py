@@ -14,6 +14,11 @@ _REST_PROBE_COMMAND = "gh api user"
 _AUTH_STATUS_COMMAND = "gh auth status"
 _RATE_LIMIT_COMMAND = "gh api rate_limit"
 _GH_AUTH_LOGIN_COMMAND = "gh auth login"
+_GRAPHQL_BACKED_COMMANDS = {
+    ("gh", "api", "graphql"),
+    ("gh", "pr", "view"),
+    ("gh", "issue", "view"),
+}
 
 
 class GhCommandError(RuntimeError):
@@ -42,6 +47,10 @@ class GhCommandError(RuntimeError):
             return "gh api user"
         if self.cmd[:3] == ("gh", "auth", "status"):
             return "gh auth status"
+        if self.cmd[:3] == ("gh", "pr", "view"):
+            return "gh pr view"
+        if self.cmd[:3] == ("gh", "issue", "view"):
+            return "gh issue view"
         return shlex.join(list(self.cmd))
 
 
@@ -96,13 +105,13 @@ def _diagnose_command_error(error: GhCommandError) -> _Diagnosis:
             ),
         )
 
-    if error.cmd[:3] == ("gh", "api", "graphql") and _looks_like_transport_error(lowered):
+    if _is_graphql_backed_command(error.cmd) and _looks_like_transport_error(lowered):
         attempt_suffix = _format_attempt_suffix(error)
         return _Diagnosis(
             headline=f"GitHub GraphQL request failed{attempt_suffix}.",
             category="GraphQL transport / network",
             explanation=(
-                "The GraphQL request kept failing before a complete response arrived. "
+                "The request appears to have failed while GitHub GraphQL data was being fetched. "
                 "This usually points to transient network, proxy, TLS, or GitHub-side transport issues."
             ),
             next_commands=(
@@ -133,6 +142,10 @@ def _format_attempt_suffix(error: GhCommandError) -> str:
     if error.attempts <= 1:
         return ""
     return f" after {error.attempts} attempts"
+
+
+def _is_graphql_backed_command(cmd: Sequence[str]) -> bool:
+    return tuple(str(part) for part in cmd[:3]) in _GRAPHQL_BACKED_COMMANDS
 
 
 def _looks_like_transport_error(lowered: str) -> bool:

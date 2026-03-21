@@ -706,7 +706,12 @@ class GitHubClient:
             cmd.extend(["--repo", repo])
         cmd.extend(["--json", ",".join(fields)])
 
-        payload = _run_command_json(cmd)
+        payload = _run_command_json(
+            cmd,
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
         number = _as_int(payload.get("number"), context="number")
         title = _as_optional_str(payload.get("title")) or ""
         url = _as_optional_str(payload.get("url")) or ""
@@ -811,7 +816,12 @@ class GitHubClient:
             cmd.extend(["--repo", repo])
         cmd.extend(["--json", ",".join(fields)])
 
-        payload = _run_command_json(cmd)
+        payload = _run_command_json(
+            cmd,
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
         number = _as_int(payload.get("number"), context="number")
         title = _as_optional_str(payload.get("title")) or ""
         url = _as_optional_str(payload.get("url")) or ""
