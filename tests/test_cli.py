@@ -2100,6 +2100,142 @@ def test_pr_body_template_surfaces_non_404_lookup_failures(
     assert not output_path.exists()
 
 
+def test_pr_thread_reply_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "reply.md"
+    body_file.write_text("> quoted context\n\nreply from file\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "thread-reply",
+            "PRRT_mock_1",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: replied" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    reply_call = next(
+        call for call in graphql_calls if "addPullRequestReviewThreadReply" in _extract_form(call, "query")
+    )
+    assert _extract_field(reply_call, "body") == "> quoted context\n\nreply from file\n"
+
+
+def test_pr_review_comment_supports_body_file_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("stdin review comment\nwith second line\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: commented" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert _extract_field(review_call, "body") == "stdin review comment\nwith second line\n"
+
+
+def test_pr_review_suggest_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "suggestion.md"
+    body_file.write_text("nits from file\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            str(body_file),
+            "--suggestion",
+            "new_api_call()",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: suggested" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert _extract_field(review_call, "body") == "nits from file\n\n```suggestion\nnew_api_call()\n```"
+
+
+def test_pr_thread_reply_rejects_body_and_body_file_together(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    body_file = tmp_path / "reply.md"
+    body_file.write_text("reply from file\n", encoding="utf-8")
+
+    try:
+        cli.run(
+            [
+                "pr",
+                "thread-reply",
+                "PRRT_mock_1",
+                "--body",
+                "inline reply",
+                "--body-file",
+                str(body_file),
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected argparse to reject --body with --body-file")
+
+    err = capsys.readouterr().err
+    assert "argument -F/--body-file: not allowed with argument --body" in err
+
+
 def test_repo_preflight_renders_onboarding_summary_and_commands(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
