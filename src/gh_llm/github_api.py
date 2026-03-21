@@ -871,7 +871,17 @@ class GitHubClient:
 
         encoded_branch = quote(default_branch, safe="")
         tree_payload = _run_command_json(["gh", "api", f"repos/{owner}/{name}/git/trees/{encoded_branch}?recursive=1"])
+        tree_truncated = bool(tree_payload.get("truncated"))
         tree_items = _as_list(tree_payload.get("tree"))
+        if tree_truncated:
+            tree_items = _merge_repo_tree_items(
+                tree_items,
+                self._collect_common_onboarding_tree_items(
+                    owner=owner,
+                    name=name,
+                    default_branch=default_branch,
+                ),
+            )
 
         parent_obj = _as_dict_optional(payload.get("parent"))
         viewer_permission = _normalized_optional_str(payload.get("viewerPermission"))
@@ -895,12 +905,69 @@ class GitHubClient:
             fork_recommended=(not can_push),
             is_fork=bool(payload.get("isFork")),
             parent_repo=_normalized_optional_str(parent_obj.get("nameWithOwner")) if parent_obj is not None else None,
+            tree_truncated=tree_truncated,
             contributing_docs=_collect_repo_documents(tree_items, kind="contributing"),
             agents_docs=_collect_repo_documents(tree_items, kind="agents"),
             pr_templates=_collect_repo_documents(tree_items, kind="pr_template"),
             codeowners_files=_collect_repo_documents(tree_items, kind="codeowners"),
             branch_protection=branch_protection,
         )
+
+    def _collect_common_onboarding_tree_items(
+        self,
+        *,
+        owner: str,
+        name: str,
+        default_branch: str,
+    ) -> list[object]:
+        items: list[object] = []
+        for directory in ("", ".github", ".github/PULL_REQUEST_TEMPLATE"):
+            items.extend(
+                self._fetch_repo_directory_entries(
+                    owner=owner,
+                    name=name,
+                    directory=directory,
+                    default_branch=default_branch,
+                )
+            )
+        return items
+
+    def _fetch_repo_directory_entries(
+        self,
+        *,
+        owner: str,
+        name: str,
+        directory: str,
+        default_branch: str,
+    ) -> list[object]:
+        encoded_ref = quote(default_branch, safe="")
+        if directory:
+            encoded_directory = quote(directory, safe="/")
+            endpoint = f"repos/{owner}/{name}/contents/{encoded_directory}?ref={encoded_ref}"
+        else:
+            endpoint = f"repos/{owner}/{name}/contents?ref={encoded_ref}"
+
+        try:
+            payload = _run_command_json_any(["gh", "api", endpoint])
+        except RuntimeError as error:
+            message = str(error)
+            if "404" in message or "Not Found" in message:
+                return []
+            raise
+
+        entries: list[object] = cast("list[object]", payload) if isinstance(payload, list) else [payload]
+        out: list[object] = []
+        for raw_entry in entries:
+            entry = _as_dict_optional(raw_entry)
+            if entry is None:
+                continue
+            path = _normalized_optional_str(entry.get("path"))
+            item_type = _normalized_optional_str(entry.get("type"))
+            if path is None or item_type is None:
+                continue
+            normalized_type = "blob" if item_type == "file" else item_type
+            out.append({"path": path, "type": normalized_type})
+        return out
 
     def _resolve_default_branch_protection(
         self,
@@ -909,10 +976,60 @@ class GitHubClient:
         name: str,
         default_branch: str,
     ) -> RepoBranchProtection | None:
+        encoded_branch = quote(default_branch, safe="")
+        branch_payload = _run_command_json(["gh", "api", f"repos/{owner}/{name}/branches/{encoded_branch}"])
+        if not bool(branch_payload.get("protected")):
+            return None
+
+        protection_obj = _as_dict_optional(branch_payload.get("protection"))
+        required_status_checks_obj = (
+            _as_dict_optional(protection_obj.get("required_status_checks")) if protection_obj is not None else None
+        )
+        required_status_check_contexts = _extract_required_status_check_contexts(required_status_checks_obj)
+        requires_status_checks = bool(
+            required_status_checks_obj is not None
+            and (
+                _normalized_optional_str(required_status_checks_obj.get("enforcement_level")) not in {None, "off"}
+                or required_status_check_contexts
+            )
+        )
+
+        rule = self._resolve_default_branch_protection_rule_details(
+            owner=owner,
+            name=name,
+            default_branch=default_branch,
+        )
+        if rule is not None:
+            return RepoBranchProtection(
+                pattern=rule.pattern,
+                source="graphql",
+                requires_status_checks=requires_status_checks,
+                required_status_check_contexts=required_status_check_contexts,
+                requires_approving_reviews=rule.requires_approving_reviews,
+                required_approving_review_count=rule.required_approving_review_count,
+                requires_code_owner_reviews=rule.requires_code_owner_reviews,
+                is_admin_enforced=rule.is_admin_enforced,
+            )
+
+        return RepoBranchProtection(
+            pattern=default_branch,
+            source="rest",
+            requires_status_checks=requires_status_checks,
+            required_status_check_contexts=required_status_check_contexts,
+        )
+
+    def _resolve_default_branch_protection_rule_details(
+        self,
+        *,
+        owner: str,
+        name: str,
+        default_branch: str,
+    ) -> RepoBranchProtection | None:
         query = """
-query($owner:String!,$name:String!){
+query($owner:String!,$name:String!,$after:String){
   repository(owner:$owner,name:$name){
-    branchProtectionRules(first:20){
+    branchProtectionRules(first:100, after:$after){
+      pageInfo{hasNextPage endCursor}
       nodes{
         pattern
         requiresStatusChecks
@@ -926,11 +1043,33 @@ query($owner:String!,$name:String!){
   }
 }
 """.strip()
-        payload = _run_graphql_payload(query, {"owner": owner, "name": name})
-        data_obj = _as_dict(payload.get("data"), context="graphql data")
-        repo_obj = _as_dict(data_obj.get("repository"), context="repository")
-        rules_obj = _as_dict(repo_obj.get("branchProtectionRules"), context="branchProtectionRules")
-        return _select_branch_protection_rule(default_branch=default_branch, rules=_as_list(rules_obj.get("nodes")))
+        after: str | None = None
+        best_match: tuple[tuple[int, int, int], RepoBranchProtection] | None = None
+
+        while True:
+            variables: dict[str, str | int] = {"owner": owner, "name": name}
+            if after is not None:
+                variables["after"] = after
+            payload = _run_graphql_payload(query, variables)
+            data_obj = _as_dict(payload.get("data"), context="graphql data")
+            repo_obj = _as_dict(data_obj.get("repository"), context="repository")
+            rules_obj = _as_dict(repo_obj.get("branchProtectionRules"), context="branchProtectionRules")
+
+            for raw_rule in _as_list(rules_obj.get("nodes")):
+                candidate = _build_branch_protection_rule_candidate(default_branch=default_branch, raw_rule=raw_rule)
+                if candidate is None:
+                    continue
+                if best_match is None or candidate[0] < best_match[0]:
+                    best_match = candidate
+
+            page_info = _as_dict(rules_obj.get("pageInfo"), context="branchProtectionRules pageInfo")
+            if not bool(page_info.get("hasNextPage")):
+                break
+            after = _as_optional_str(page_info.get("endCursor"))
+            if after is None:
+                break
+
+        return None if best_match is None else best_match[1]
 
     def fetch_timeline_forward(
         self,
@@ -2881,11 +3020,30 @@ def _collect_repo_documents(tree_items: list[object], *, kind: str) -> tuple[Rep
     return tuple(docs)
 
 
+def _merge_repo_tree_items(primary: list[object], extras: list[object]) -> list[object]:
+    merged: list[object] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_item in [*primary, *extras]:
+        item = _as_dict_optional(raw_item)
+        if item is None:
+            continue
+        path = _normalized_optional_str(item.get("path"))
+        item_type = _normalized_optional_str(item.get("type"))
+        if path is None or item_type is None:
+            continue
+        key = (path.lower(), item_type.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({"path": path, "type": item_type})
+    return merged
+
+
 def _matches_repo_document_kind(path: str, *, kind: str) -> bool:
     normalized = path.lower()
     base_name = normalized.rsplit("/", 1)[-1]
     if kind == "contributing":
-        return base_name == "contributing" or base_name.startswith("contributing.")
+        return base_name.startswith("contributing")
     if kind == "agents":
         return base_name == "agents.md"
     if kind == "codeowners":
@@ -2897,40 +3055,71 @@ def _matches_repo_document_kind(path: str, *, kind: str) -> bool:
     raise RuntimeError(f"unknown repository document kind: {kind}")
 
 
-def _select_branch_protection_rule(default_branch: str, rules: list[object]) -> RepoBranchProtection | None:
-    candidates: list[tuple[tuple[int, int, int], RepoBranchProtection]] = []
-    for raw_rule in rules:
-        rule = _as_dict_optional(raw_rule)
-        if rule is None:
-            continue
-        pattern = _normalized_optional_str(rule.get("pattern"))
-        if pattern is None or not fnmatchcase(default_branch, pattern):
-            continue
-        contexts = tuple(
-            context
-            for raw_context in _as_list(rule.get("requiredStatusCheckContexts"))
-            if (context := _normalized_optional_str(raw_context)) is not None
-        )
-        summary = RepoBranchProtection(
-            pattern=pattern,
-            requires_status_checks=bool(rule.get("requiresStatusChecks")),
-            required_status_check_contexts=contexts,
-            requires_approving_reviews=bool(rule.get("requiresApprovingReviews")),
-            required_approving_review_count=(
-                None
-                if rule.get("requiredApprovingReviewCount") is None
-                else _as_int_default(rule.get("requiredApprovingReviewCount"), default=0)
-            ),
-            requires_code_owner_reviews=bool(rule.get("requiresCodeOwnerReviews")),
-            is_admin_enforced=bool(rule.get("isAdminEnforced")),
-        )
-        candidates.append((_branch_protection_specificity(pattern, default_branch), summary))
+def _extract_required_status_check_contexts(required_status_checks_obj: dict[str, object] | None) -> tuple[str, ...]:
+    if required_status_checks_obj is None:
+        return ()
 
-    if not candidates:
+    contexts: list[str] = []
+    seen: set[str] = set()
+
+    def add_context(value: object) -> None:
+        context = _normalized_optional_str(value)
+        if context is None:
+            return
+        lowered = context.lower()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        contexts.append(context)
+
+    for raw_check in _as_list(required_status_checks_obj.get("checks")):
+        check = _as_dict_optional(raw_check)
+        if check is None:
+            continue
+        add_context(check.get("context"))
+
+    if not contexts:
+        for raw_context in _as_list(required_status_checks_obj.get("contexts")):
+            add_context(raw_context)
+
+    return tuple(contexts)
+
+
+def _build_branch_protection_rule_candidate(
+    *,
+    default_branch: str,
+    raw_rule: object,
+) -> tuple[tuple[int, int, int], RepoBranchProtection] | None:
+    rule = _as_dict_optional(raw_rule)
+    if rule is None:
         return None
-
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    pattern = _normalized_optional_str(rule.get("pattern"))
+    if pattern is None or not fnmatchcase(default_branch, pattern):
+        return None
+    contexts = tuple(
+        context
+        for raw_context in _as_list(rule.get("requiredStatusCheckContexts"))
+        if (context := _normalized_optional_str(raw_context)) is not None
+    )
+    summary = RepoBranchProtection(
+        pattern=pattern,
+        source="graphql",
+        requires_status_checks=bool(rule.get("requiresStatusChecks")),
+        required_status_check_contexts=contexts,
+        requires_approving_reviews=(
+            None if rule.get("requiresApprovingReviews") is None else bool(rule.get("requiresApprovingReviews"))
+        ),
+        required_approving_review_count=(
+            None
+            if rule.get("requiredApprovingReviewCount") is None
+            else _as_int_default(rule.get("requiredApprovingReviewCount"), default=0)
+        ),
+        requires_code_owner_reviews=(
+            None if rule.get("requiresCodeOwnerReviews") is None else bool(rule.get("requiresCodeOwnerReviews"))
+        ),
+        is_admin_enforced=(None if rule.get("isAdminEnforced") is None else bool(rule.get("isAdminEnforced"))),
+    )
+    return (_branch_protection_specificity(pattern, default_branch), summary)
 
 
 def _branch_protection_specificity(pattern: str, default_branch: str) -> tuple[int, int, int]:

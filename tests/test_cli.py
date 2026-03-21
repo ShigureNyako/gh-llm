@@ -140,6 +140,12 @@ class GhResponder:
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/git/trees/" in cmd[2]:
             return FakeCompletedProcess(json.dumps(_repo_tree_payload()))
 
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/branches/" in cmd[2]:
+            return FakeCompletedProcess(json.dumps(_repo_branch_payload(cmd[2])))
+
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/contents" in cmd[2]:
+            return FakeCompletedProcess(json.dumps(_repo_contents_payload(cmd[2])))
+
         if cmd[:3] != ["gh", "api", "graphql"]:
             return FakeCompletedProcess("", returncode=1, stderr="unexpected command")
 
@@ -148,39 +154,8 @@ class GhResponder:
         after = _extract_field(cmd, "after")
         before = _extract_field(cmd, "before")
 
-        if "branchProtectionRules(first:20)" in query:
-            return FakeCompletedProcess(
-                json.dumps(
-                    {
-                        "data": {
-                            "repository": {
-                                "branchProtectionRules": {
-                                    "nodes": [
-                                        {
-                                            "pattern": "release/*",
-                                            "requiresStatusChecks": True,
-                                            "requiredStatusCheckContexts": ["release-gate"],
-                                            "requiresApprovingReviews": True,
-                                            "requiredApprovingReviewCount": 2,
-                                            "requiresCodeOwnerReviews": False,
-                                            "isAdminEnforced": False,
-                                        },
-                                        {
-                                            "pattern": "develop",
-                                            "requiresStatusChecks": True,
-                                            "requiredStatusCheckContexts": ["lint", "unit-tests"],
-                                            "requiresApprovingReviews": True,
-                                            "requiredApprovingReviewCount": 1,
-                                            "requiresCodeOwnerReviews": True,
-                                            "isAdminEnforced": True,
-                                        },
-                                    ]
-                                }
-                            }
-                        }
-                    }
-                )
-            )
+        if "branchProtectionRules(first:100" in query:
+            return FakeCompletedProcess(json.dumps(_branch_protection_rules_payload(after=after)))
 
         if "reviewThreads(first:100" in query:
             payload = _review_threads_payload(after=after)
@@ -1863,6 +1838,145 @@ def test_repo_preflight_renders_onboarding_summary_and_commands(
     assert "gh pr create --repo PaddlePaddle/Paddle --base develop" in out
     assert "gh-llm pr checks --pr <pr_number> --repo PaddlePaddle/Paddle" in out
 
+
+def test_repo_preflight_uses_rest_branch_protection_when_rule_query_has_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_without_rule_match(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and "branchProtectionRules(first:100" in _extract_form(cmd, "query"):
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "branchProtectionRules": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [],
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_without_rule_match)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "Protected branch: `develop`" in out
+    assert "Required checks: `lint`, `unit-tests`" in out
+    assert "Approving reviews: unknown" in out
+    assert "Code owner reviews: unknown" in out
+    assert "Admin enforcement: unknown" in out
+    assert "gh-llm pr checks --pr <pr_number> --repo PaddlePaddle/Paddle" in out
+    assert "Default branch `develop` is not protected." not in out
+
+
+def test_repo_preflight_warns_on_truncated_tree_and_detects_contributing_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_truncated_tree(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/git/trees/" in cmd[2]:
+            return FakeCompletedProcess(json.dumps({"sha": "mock-tree-sha", "truncated": True, "tree": []}))
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_truncated_tree)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "tree_truncated: true" in out
+    assert (
+        "Warning: recursive repository tree output was truncated; onboarding file detection used common-path fallback and may still be incomplete."
+        in out
+    )
+    assert "CONTRIBUTING_GUIDE.md" in out
+    assert "gh browse -R PaddlePaddle/Paddle --branch develop 'CONTRIBUTING_GUIDE.md'" in out
+
+
+def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
+    del after
+    return {
+        "data": {
+            "repository": {
+                "branchProtectionRules": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "pattern": "release/*",
+                            "requiresStatusChecks": True,
+                            "requiredStatusCheckContexts": ["release-gate"],
+                            "requiresApprovingReviews": True,
+                            "requiredApprovingReviewCount": 2,
+                            "requiresCodeOwnerReviews": False,
+                            "isAdminEnforced": False,
+                        },
+                        {
+                            "pattern": "develop",
+                            "requiresStatusChecks": True,
+                            "requiredStatusCheckContexts": ["lint", "unit-tests"],
+                            "requiresApprovingReviews": True,
+                            "requiredApprovingReviewCount": 1,
+                            "requiresCodeOwnerReviews": True,
+                            "isAdminEnforced": True,
+                        },
+                    ],
+                }
+            }
+        }
+    }
+
+
+def _repo_branch_payload(path: str) -> dict[str, Any]:
+    del path
+    return {
+        "name": "develop",
+        "protected": True,
+        "protection": {
+            "enabled": True,
+            "required_status_checks": {
+                "enforcement_level": "non_admins",
+                "contexts": ["lint", "unit-tests"],
+                "checks": [
+                    {"context": "lint", "app_id": None},
+                    {"context": "unit-tests", "app_id": None},
+                ],
+            },
+        },
+    }
+
+
+def _repo_contents_payload(path: str) -> object:
+    if "/contents/.github/PULL_REQUEST_TEMPLATE" in path:
+        return [{"path": ".github/PULL_REQUEST_TEMPLATE.md", "type": "file"}]
+    if "/contents/.github" in path:
+        return [
+            {"path": ".github/PULL_REQUEST_TEMPLATE.md", "type": "file"},
+            {"path": ".github/CODEOWNERS", "type": "file"},
+        ]
+    return [
+        {"path": "README.md", "type": "file"},
+        {"path": "CONTRIBUTING_GUIDE.md", "type": "file"},
+        {"path": "AGENTS.md", "type": "file"},
+    ]
 
 
 def _repo_tree_payload() -> dict[str, Any]:

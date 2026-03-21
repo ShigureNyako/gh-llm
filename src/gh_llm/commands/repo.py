@@ -51,6 +51,7 @@ def render_repo_frontmatter(preflight: RepoPreflight) -> list[str]:
         f"can_push: {str(preflight.can_push).lower()}",
         f"fork_recommended: {str(preflight.fork_recommended).lower()}",
         f"is_fork: {str(preflight.is_fork).lower()}",
+        f"tree_truncated: {str(preflight.tree_truncated).lower()}",
     ]
     if preflight.parent_repo:
         lines.append(f"parent_repo: {preflight.parent_repo}")
@@ -62,7 +63,9 @@ def render_repo_frontmatter(preflight: RepoPreflight) -> list[str]:
 
 def render_repo_summary(preflight: RepoPreflight) -> list[str]:
     permission = preflight.viewer_permission or "UNKNOWN"
-    https_clone_url = preflight.url + ".git" if preflight.url else f"https://github.com/{preflight.owner}/{preflight.name}.git"
+    https_clone_url = (
+        preflight.url + ".git" if preflight.url else f"https://github.com/{preflight.owner}/{preflight.name}.git"
+    )
     lines = [
         "## Repository",
         f"Description: {preflight.description or '(no description)'}",
@@ -75,6 +78,10 @@ def render_repo_summary(preflight: RepoPreflight) -> list[str]:
     ]
     if preflight.is_fork and preflight.parent_repo:
         lines.append(f"Parent repo: `{preflight.parent_repo}`")
+    if preflight.tree_truncated:
+        lines.append(
+            "Warning: recursive repository tree output was truncated; onboarding file detection used common-path fallback and may still be incomplete."
+        )
     lines.append("")
     return lines
 
@@ -134,33 +141,44 @@ def render_repo_branch_protection(preflight: RepoPreflight) -> list[str]:
     lines = ["## Branch Protection"]
     protection = preflight.branch_protection
     if protection is None:
-        lines.append(f"No branch protection rule matched `{preflight.default_branch}`.")
+        lines.append(f"Default branch `{preflight.default_branch}` is not protected.")
         lines.append("")
         return lines
 
-    lines.append(f"Matched rule: `{protection.pattern}`")
+    if protection.source == "graphql":
+        lines.append(f"Matched rule: `{protection.pattern}`")
+    else:
+        lines.append(f"Protected branch: `{protection.pattern}`")
+        lines.append("Review-related rule details were not available from branch rule queries.")
     if protection.requires_status_checks:
         if protection.required_status_check_contexts:
             lines.append(
-                "Required checks: "
-                + ", ".join(f"`{name}`" for name in protection.required_status_check_contexts)
+                "Required checks: " + ", ".join(f"`{name}`" for name in protection.required_status_check_contexts)
             )
         else:
             lines.append("Required checks: enabled, but GitHub did not return named contexts.")
     else:
         lines.append("Required checks: not enabled")
 
-    if protection.requires_approving_reviews:
+    if protection.requires_approving_reviews is None:
+        lines.append("Approving reviews: unknown")
+    elif protection.requires_approving_reviews:
         required = protection.required_approving_review_count or 1
         lines.append(f"Approving reviews: required ({required})")
     else:
         lines.append("Approving reviews: not required")
 
-    lines.append(
-        "Code owner reviews: "
-        + ("required" if protection.requires_code_owner_reviews else "not required")
-    )
-    lines.append("Admin enforcement: " + ("enabled" if protection.is_admin_enforced else "disabled"))
+    if protection.requires_code_owner_reviews is None:
+        lines.append("Code owner reviews: unknown")
+    else:
+        lines.append(
+            "Code owner reviews: " + ("required" if protection.requires_code_owner_reviews else "not required")
+        )
+
+    if protection.is_admin_enforced is None:
+        lines.append("Admin enforcement: unknown")
+    else:
+        lines.append("Admin enforcement: " + ("enabled" if protection.is_admin_enforced else "disabled"))
     lines.append("")
     return lines
 
@@ -191,7 +209,9 @@ def render_repo_next_commands(preflight: RepoPreflight) -> list[str]:
         if not docs:
             continue
         lines.append(f"{step}. {title}:")
-        lines.append(f"   ⏎ `{_gh_browse_command(repo=repo, default_branch=preflight.default_branch, path=docs[0].path)}`")
+        lines.append(
+            f"   ⏎ `{_gh_browse_command(repo=repo, default_branch=preflight.default_branch, path=docs[0].path)}`"
+        )
         step += 1
 
     lines.append(f"{step}. Open your PR against the default branch:")

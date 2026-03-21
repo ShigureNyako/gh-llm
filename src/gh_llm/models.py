@@ -103,12 +103,13 @@ class RepoDocument:
 @dataclass(frozen=True)
 class RepoBranchProtection:
     pattern: str
+    source: str = "rest"
     requires_status_checks: bool = False
     required_status_check_contexts: tuple[str, ...] = ()
-    requires_approving_reviews: bool = False
+    requires_approving_reviews: bool | None = None
     required_approving_review_count: int | None = None
-    requires_code_owner_reviews: bool = False
-    is_admin_enforced: bool = False
+    requires_code_owner_reviews: bool | None = None
+    is_admin_enforced: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class RepoPreflight:
     fork_recommended: bool = False
     is_fork: bool = False
     parent_repo: str | None = None
+    tree_truncated: bool = False
     contributing_docs: tuple[RepoDocument, ...] = ()
     agents_docs: tuple[RepoDocument, ...] = ()
     pr_templates: tuple[RepoDocument, ...] = ()
