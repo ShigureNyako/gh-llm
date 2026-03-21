@@ -496,7 +496,6 @@ def test_doctor_scopes_auth_status_to_target_host(
     assert ["gh", "auth", "status"] not in calls
 
 
-
 def test_parse_event_indexes_batch() -> None:
     assert cli.parse_event_indexes(["5,11", "8-6"]) == [5, 6, 7, 8, 11]
 
@@ -1850,7 +1849,6 @@ def test_pr_view_graphql_transport_error_uses_layered_diagnostics(
     assert "- gh llm doctor" in err
 
 
-
 def test_issue_view_graphql_transport_error_uses_layered_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1879,7 +1877,6 @@ def test_issue_view_graphql_transport_error_uses_layered_diagnostics(
     assert "Category: GraphQL transport / network" in err
     assert "Command: gh issue view" in err
     assert "- gh llm doctor" in err
-
 
 
 def test_pr_review_submit_supports_body_file(
