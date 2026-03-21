@@ -14,7 +14,7 @@ from gh_llm.commands.options import raise_unknown_option_value
 from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
 from gh_llm.models import PullRequestDiffPage
-from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
+from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager, build_context_from_meta
 from gh_llm.pr_body import build_pull_request_body_scaffold, parse_required_sections
 from gh_llm.render import (
     render_checks_section,
@@ -348,16 +348,22 @@ def cmd_pr_view(args: Any) -> int:
     pager = TimelinePager(client)
 
     meta = client.resolve_pull_request(selector=args.pr, repo=args.repo)
-    context, first_page, last_page = pager.build_initial(
-        meta,
-        page_size=page_size,
-        show_resolved_details=expand.resolved,
-        show_outdated_details=True,
-        show_minimized_details=expand.minimized,
-        show_details_blocks=expand.details,
-        diff_hunk_lines=diff_hunk_lines,
-    )
-    shown_pages: set[int] = {1}
+    context = build_context_from_meta(meta=meta, page_size=page_size)
+    first_page: TimelinePage | None = None
+    last_page: TimelinePage | None = None
+    shown_pages: set[int] = set()
+
+    if show.timeline:
+        context, first_page, last_page = pager.build_initial(
+            meta,
+            page_size=page_size,
+            show_resolved_details=expand.resolved,
+            show_outdated_details=True,
+            show_minimized_details=expand.minimized,
+            show_details_blocks=expand.details,
+            diff_hunk_lines=diff_hunk_lines,
+        )
+        shown_pages.add(1)
 
     wrote_output = False
 
@@ -376,6 +382,7 @@ def cmd_pr_view(args: Any) -> int:
     if show.description:
         print_block(render_description(context))
     if show.timeline:
+        assert first_page is not None
         print_block(["## Timeline"])
         print_block(render_page(1, context, first_page))
 
@@ -588,9 +595,9 @@ def cmd_pr_thread_expand(args: Any) -> int:
 
 def cmd_pr_checks(args: Any) -> int:
     client = GitHubClient()
-    pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
-    checks = client.fetch_checks(meta.ref)
+    meta = _resolve_pr_meta(client=client, args=args)
+    context = build_context_from_meta(meta=meta, page_size=DEFAULT_PAGE_SIZE)
+    checks = client.fetch_checks(meta.ref) if meta.state == "OPEN" else []
     for line in render_checks_section(
         context=context,
         checks=checks,

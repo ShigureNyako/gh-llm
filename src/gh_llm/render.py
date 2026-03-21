@@ -35,10 +35,15 @@ def render_frontmatter(context: TimelineContext) -> list[str]:
         f"labels: {json.dumps(list(context.labels), ensure_ascii=False)}",
         f"draft: {str(context.is_draft).lower()}",
         f"updated_at: {context.updated_at}",
-        f"timeline_events: {context.total_count}",
-        f"page_size: {context.page_size}",
-        f"total_pages: {context.total_pages}",
     ]
+    if context.timeline_loaded:
+        lines.extend(
+            [
+                f"timeline_events: {context.total_count}",
+                f"page_size: {context.page_size}",
+                f"total_pages: {context.total_pages}",
+            ]
+        )
     if context.kind == "pr":
         lines.append(f"is_merged: {str(context.is_merged).lower()}")
         if context.head_ref_repo:
