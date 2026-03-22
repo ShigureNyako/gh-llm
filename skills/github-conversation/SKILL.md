@@ -48,6 +48,17 @@ Command prefix mapping:
 1. If installed via `uv tool`, use `gh-llm ...`.
 2. If installed as `gh` extension, use `gh llm ...`.
 
+### Environment preflight / troubleshooting
+
+When `gh-llm` fails with unclear transport or auth symptoms (for example GraphQL `EOF`, timeout, or an environment mismatch between `gh-llm` and `gh llm`), run:
+
+```bash
+gh-llm doctor
+gh llm doctor
+```
+
+`doctor` prints the current entrypoint, resolved executable paths, active-host `gh auth status`, a REST probe, a minimal GraphQL probe, and proxy-related environment variables. Use this before guessing whether the issue is auth, network, proxy, or GitHub-side.
+
 ## Fast start
 
 ### Read a PR
