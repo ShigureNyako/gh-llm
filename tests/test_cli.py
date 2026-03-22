@@ -2880,6 +2880,24 @@ def test_pr_review_suggest_rejects_dual_stdin_inputs(
     assert not any(call[:3] == ["gh", "api", "graphql"] for call in responder.calls)
 
 
+def test_resolve_file_or_inline_text_treats_empty_file_path_as_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake_read_text_from_path_or_stdin(path: str) -> str:
+        seen.append(path)
+        return "from file"
+
+    monkeypatch.setattr(command_options, "read_text_from_path_or_stdin", fake_read_text_from_path_or_stdin)
+    args = argparse.Namespace(body="inline body", body_file="")
+
+    resolved = command_options.resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file")
+
+    assert resolved == "from file"
+    assert seen == [""]
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
