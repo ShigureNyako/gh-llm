@@ -2678,7 +2678,6 @@ def _repo_branch_payload(path: str) -> dict[str, Any] | None:
     }
 
 
-
 def test_pr_comment_edit_supports_body_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
