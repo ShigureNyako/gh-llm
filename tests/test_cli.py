@@ -114,11 +114,24 @@ class GhResponder:
                 )
             )
 
+        if cmd[:3] == ["gh", "repo", "view"]:
+            repo = cmd[3] if len(cmd) > 3 else "PaddlePaddle/Paddle"
+            return FakeCompletedProcess(json.dumps(_repo_view_payload(repo)))
+
         if cmd[:3] == ["gh", "api", "user"]:
             return FakeCompletedProcess(json.dumps({"login": "ShigureNyako"}))
 
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/pulls/" in cmd[2] and "/files?" in cmd[2]:
             return FakeCompletedProcess(json.dumps(_pull_files_payload(cmd[2])))
+
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/git/trees/" in cmd[2]:
+            return FakeCompletedProcess(json.dumps(_repo_tree_payload(cmd[2])))
+
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/branches/" in cmd[2]:
+            payload = _repo_branch_payload(cmd[2])
+            if payload is None:
+                return FakeCompletedProcess("", returncode=1, stderr="HTTP 404: Not Found")
+            return FakeCompletedProcess(json.dumps(payload))
 
         if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and cmd[2].startswith("repos/") and "/contents" not in cmd[2]:
             payload = _repository_api_payload(cmd[2])
@@ -139,6 +152,9 @@ class GhResponder:
         first = _extract_field_int(cmd, "pageSize")
         after = _extract_field(cmd, "after")
         before = _extract_field(cmd, "before")
+
+        if "branchProtectionRules(first:100" in query:
+            return FakeCompletedProcess(json.dumps(_branch_protection_rules_payload(after=after)))
 
         if "reviewThreads(first:100" in query:
             payload = _review_threads_payload(after=after)
@@ -2413,6 +2429,255 @@ def test_pr_thread_reply_rejects_body_and_body_file_together(
     assert "argument -F/--body-file: not allowed with argument --body" in err
 
 
+def test_repo_preflight_renders_onboarding_summary_and_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "repo: PaddlePaddle/Paddle" in out
+    assert "default_branch: develop" in out
+    assert "viewer_permission: READ" in out
+    assert "fork_recommended: true" in out
+    assert "Description: PaddlePaddle core framework" in out
+    assert "HTTPS clone: `https://github.com/PaddlePaddle/Paddle.git`" in out
+    assert "Push access: no (viewer_permission: READ)" in out
+    assert "CONTRIBUTING.md" in out
+    assert "AGENTS.md" in out
+    assert ".github/PULL_REQUEST_TEMPLATE.md" in out
+    assert ".github/CODEOWNERS" in out
+    assert "Matched rule: `develop`" in out
+    assert "Required checks: `lint`, `unit-tests`" in out
+    assert "Approving reviews: required (1)" in out
+    assert "Code owner reviews: required" in out
+    assert "release-gate" not in out
+    assert "gh repo fork PaddlePaddle/Paddle --clone" in out
+    assert "gh browse -R PaddlePaddle/Paddle --branch develop 'CONTRIBUTING.md'" in out
+    assert "gh browse -R PaddlePaddle/Paddle --branch develop 'AGENTS.md'" in out
+    assert "gh pr create --repo PaddlePaddle/Paddle --base develop" in out
+    assert "gh-llm pr checks --pr <pr_number> --repo PaddlePaddle/Paddle" in out
+
+
+def test_repo_preflight_uses_rest_branch_protection_when_rule_query_has_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_without_rule_match(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:3] == ["gh", "api", "graphql"] and "branchProtectionRules(first:100" in _extract_form(cmd, "query"):
+            return FakeCompletedProcess(
+                json.dumps(
+                    {
+                        "data": {
+                            "repository": {
+                                "branchProtectionRules": {
+                                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                    "nodes": [],
+                                }
+                            }
+                        }
+                    }
+                )
+            )
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_without_rule_match)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "Protected branch: `develop`" in out
+    assert "Required checks: `lint`, `unit-tests`" in out
+    assert "Approving reviews: unknown" in out
+    assert "Code owner reviews: unknown" in out
+    assert "Admin enforcement: unknown" in out
+    assert "gh-llm pr checks --pr <pr_number> --repo PaddlePaddle/Paddle" in out
+    assert "Default branch `develop` is not protected." not in out
+
+
+def test_repo_preflight_warns_on_truncated_tree_and_detects_contributing_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+
+    def run_with_truncated_tree(
+        cmd: list[str], *, check: bool, capture_output: bool, text: bool
+    ) -> FakeCompletedProcess:
+        if cmd[:2] == ["gh", "api"] and len(cmd) >= 3 and "/git/trees/" in cmd[2]:
+            return FakeCompletedProcess(json.dumps({"sha": "mock-tree-sha", "truncated": True, "tree": []}))
+        return responder.run(cmd, check=check, capture_output=capture_output, text=text)
+
+    monkeypatch.setattr(github_api.subprocess, "run", run_with_truncated_tree)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "PaddlePaddle/Paddle"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "tree_truncated: true" in out
+    assert (
+        "Warning: recursive repository tree output was truncated; onboarding file detection used common-path fallback and may still be incomplete."
+        in out
+    )
+    assert "CONTRIBUTING_GUIDE.md" in out
+    assert "gh browse -R PaddlePaddle/Paddle --branch develop 'CONTRIBUTING_GUIDE.md'" in out
+
+
+def test_repo_preflight_surfaces_parent_repo_and_targets_upstream_pr_for_forks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    code = cli.run(["repo", "preflight", "--repo", "ShigureNyako/gh-llm"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "repo: ShigureNyako/gh-llm" in out
+    assert "is_fork: true" in out
+    assert "parent_repo: ShigureLab/gh-llm" in out
+    assert "Parent repo: `ShigureLab/gh-llm`" in out
+    assert "gh pr create --repo ShigureLab/gh-llm --base main" in out
+    assert "gh pr create --repo ShigureNyako/gh-llm --base main" not in out
+
+
+def _branch_protection_rules_payload(after: str | None) -> dict[str, Any]:
+    del after
+    return {
+        "data": {
+            "repository": {
+                "branchProtectionRules": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "pattern": "release/*",
+                            "requiresStatusChecks": True,
+                            "requiredStatusCheckContexts": ["release-gate"],
+                            "requiresApprovingReviews": True,
+                            "requiredApprovingReviewCount": 2,
+                            "requiresCodeOwnerReviews": False,
+                            "isAdminEnforced": False,
+                        },
+                        {
+                            "pattern": "develop",
+                            "requiresStatusChecks": True,
+                            "requiredStatusCheckContexts": ["lint", "unit-tests"],
+                            "requiresApprovingReviews": True,
+                            "requiredApprovingReviewCount": 1,
+                            "requiresCodeOwnerReviews": True,
+                            "isAdminEnforced": True,
+                        },
+                    ],
+                },
+            }
+        }
+    }
+
+
+def _repo_view_payload(repo: str) -> dict[str, Any]:
+    if repo == "ShigureNyako/gh-llm":
+        return {
+            "nameWithOwner": "ShigureNyako/gh-llm",
+            "description": "Forked gh-llm workspace",
+            "homepageUrl": "",
+            "isFork": True,
+            "parent": {
+                "name": "gh-llm",
+                "owner": {"login": "ShigureLab"},
+            },
+            "url": "https://github.com/ShigureNyako/gh-llm",
+            "sshUrl": "git@github.com:ShigureNyako/gh-llm.git",
+            "viewerPermission": "ADMIN",
+            "defaultBranchRef": {"name": "main"},
+        }
+    return {
+        "nameWithOwner": "PaddlePaddle/Paddle",
+        "description": "PaddlePaddle core framework",
+        "homepageUrl": "https://www.paddlepaddle.org.cn/",
+        "isFork": False,
+        "parent": None,
+        "url": "https://github.com/PaddlePaddle/Paddle",
+        "sshUrl": "git@github.com:PaddlePaddle/Paddle.git",
+        "viewerPermission": "READ",
+        "defaultBranchRef": {"name": "develop"},
+    }
+
+
+def _repo_tree_payload(path: str) -> dict[str, Any]:
+    if "repos/ShigureNyako/gh-llm/" in path:
+        return {
+            "sha": "mock-tree-sha",
+            "truncated": False,
+            "tree": [
+                {"path": "README.md", "type": "blob"},
+                {"path": "skills/github-conversation/SKILL.md", "type": "blob"},
+            ],
+        }
+    return {
+        "sha": "mock-tree-sha",
+        "truncated": False,
+        "tree": [
+            {"path": "README.md", "type": "blob"},
+            {"path": "CONTRIBUTING.md", "type": "blob"},
+            {"path": "AGENTS.md", "type": "blob"},
+            {"path": ".github/PULL_REQUEST_TEMPLATE.md", "type": "blob"},
+            {"path": ".github/CODEOWNERS", "type": "blob"},
+            {"path": "docs/guide.md", "type": "blob"},
+        ],
+    }
+
+
+def _repo_branch_payload(path: str) -> dict[str, Any] | None:
+    if "/branches/" not in path:
+        return None
+    if "repos/ShigureNyako/gh-llm/branches/main" in path:
+        return {
+            "name": "main",
+            "protected": False,
+            "protection": {
+                "enabled": False,
+                "required_status_checks": {
+                    "enforcement_level": "off",
+                    "contexts": [],
+                    "checks": [],
+                },
+            },
+        }
+    return {
+        "name": "develop",
+        "protected": True,
+        "protection": {
+            "enabled": True,
+            "required_status_checks": {
+                "enforcement_level": "non_admins",
+                "contexts": ["lint", "unit-tests"],
+                "checks": [
+                    {"context": "lint", "app_id": None},
+                    {"context": "unit-tests", "app_id": None},
+                ],
+            },
+        },
+    }
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):
@@ -2550,6 +2815,32 @@ def _repository_contents_payload(path: str) -> dict[str, Any] | list[dict[str, A
     if len(route_parts) < 3:
         return None
     repo = f"{route_parts[1]}/{route_parts[2]}"
+
+    if repo == "PaddlePaddle/Paddle" and raw_repo_path == "":
+        return [
+            {"type": "file", "path": "README.md", "name": "README.md"},
+            {"type": "file", "path": "CONTRIBUTING_GUIDE.md", "name": "CONTRIBUTING_GUIDE.md"},
+            {"type": "file", "path": "AGENTS.md", "name": "AGENTS.md"},
+        ]
+
+    if repo == "PaddlePaddle/Paddle" and raw_repo_path == ".github":
+        return [
+            {
+                "type": "file",
+                "path": ".github/PULL_REQUEST_TEMPLATE.md",
+                "name": "PULL_REQUEST_TEMPLATE.md",
+            },
+            {"type": "file", "path": ".github/CODEOWNERS", "name": "CODEOWNERS"},
+        ]
+
+    if repo == "PaddlePaddle/Paddle" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE":
+        return [
+            {
+                "type": "file",
+                "path": ".github/PULL_REQUEST_TEMPLATE.md",
+                "name": "PULL_REQUEST_TEMPLATE.md",
+            }
+        ]
 
     if repo == "ShigureLab/gh-llm" and raw_repo_path == ".github/PULL_REQUEST_TEMPLATE.md":
         content = "\n".join(

@@ -12,6 +12,7 @@ from gh_llm.commands.pr import (
     parse_review_ids as _parse_review_ids,
     register_pr_parser,
 )
+from gh_llm.commands.repo import register_repo_parser
 from gh_llm.diagnostics import GhCommandError, format_command_error
 from gh_llm.invocation import detect_prog_name
 
@@ -60,6 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     register_pr_parser(subparsers)
     register_issue_parser(subparsers)
+    register_repo_parser(subparsers)
     register_doctor_parser(subparsers)
 
     return parser
