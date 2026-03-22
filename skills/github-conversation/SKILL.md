@@ -98,6 +98,8 @@ gh-llm issue view <issue> --repo <owner/repo>
 gh-llm issue timeline-expand <page> --issue <issue> --repo <owner/repo>
 ```
 
+For lightweight inspection, prefer non-timeline `--show` combinations such as `--show meta`, `--show summary`, or `--show actions`; `gh-llm` keeps those paths on metadata-only loading unless `timeline` is explicitly requested.
+
 ### Write simple updates
 
 ```bash

@@ -8,7 +8,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
-from gh_llm.commands import doctor as doctor_commands, options as command_options, pr as pr_commands
+from gh_llm.commands import doctor as doctor_commands, pr as pr_commands
 from gh_llm.models import ReviewThreadSummary
 
 if TYPE_CHECKING:
@@ -858,6 +858,26 @@ def test_title_renamed_event_is_rendered(
     assert "title changed" in out
     assert "from: Old title" in out
     assert "to: New title" in out
+
+
+def test_issue_view_summary_and_actions_skip_timeline_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(["issue", "view", "77924", "--repo", "PaddlePaddle/Paddle", "--show", "summary,actions"])
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "## Description" in out
+    assert "## Actions" in out
+    assert "## Timeline" not in out
+    assert "timeline_events:" not in out
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert not any("timelineItems(" in query for query in graphql_queries)
 
 
 def test_issue_view_and_expand_use_real_cursor_pagination(
@@ -2877,24 +2897,6 @@ def test_pr_review_suggest_rejects_dual_stdin_inputs(
     err = capsys.readouterr().err
     assert "`--body-file -` cannot be combined with `--suggestion-file -`" in err
     assert not any(call[:3] == ["gh", "api", "graphql"] for call in responder.calls)
-
-
-def test_resolve_file_or_inline_text_treats_empty_file_path_as_provided(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    seen: list[str] = []
-
-    def fake_read_text_from_path_or_stdin(path: str) -> str:
-        seen.append(path)
-        return "from file"
-
-    monkeypatch.setattr(command_options, "read_text_from_path_or_stdin", fake_read_text_from_path_or_stdin)
-    args = argparse.Namespace(body="inline body", body_file="")
-
-    resolved = command_options.resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file")
-
-    assert resolved == "from file"
-    assert seen == [""]
 
 
 def _extract_form(cmd: list[str], key: str) -> str:

@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gh_llm.commands.options import raise_unknown_option_value, resolve_file_or_inline_text
+from gh_llm.commands.options import (
+    add_body_input_arguments,
+    maybe_resolve_subject,
+    raise_unknown_option_value,
+    resolve_file_or_inline_text,
+    resolve_subject,
+)
 from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
 from gh_llm.models import PullRequestDiffPage
@@ -191,12 +197,11 @@ def register_pr_parser(subparsers: Any) -> None:
 
     thread_reply_parser = pr_subparsers.add_parser("thread-reply", help="reply to a pull request review thread")
     thread_reply_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
-    thread_reply_body_group = thread_reply_parser.add_mutually_exclusive_group(required=True)
-    thread_reply_body_group.add_argument("--body", help="reply body")
-    thread_reply_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read reply body from file (use `-` to read from standard input)",
+    add_body_input_arguments(
+        thread_reply_parser,
+        required=True,
+        body_help="reply body",
+        file_help="read reply body from file (use `-` to read from standard input)",
     )
     thread_reply_parser.add_argument("--pr", help="PR number/url/branch")
     thread_reply_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -220,12 +225,11 @@ def register_pr_parser(subparsers: Any) -> None:
 
     comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit one issue/review comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
-    comment_edit_body_group = comment_edit_parser.add_mutually_exclusive_group(required=True)
-    comment_edit_body_group.add_argument("--body", help="new comment body")
-    comment_edit_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read new comment body from file (use `-` to read from standard input)",
+    add_body_input_arguments(
+        comment_edit_parser,
+        required=True,
+        body_help="new comment body",
+        file_help="read new comment body from file (use `-` to read from standard input)",
     )
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -290,12 +294,11 @@ def register_pr_parser(subparsers: Any) -> None:
         help="starting diff side for a multi-line range (defaults to --side)",
     )
     review_comment_parser.add_argument("--head", help="expected PR head sha for stale-snapshot protection")
-    review_comment_body_group = review_comment_parser.add_mutually_exclusive_group(required=True)
-    review_comment_body_group.add_argument("--body", help="review comment body")
-    review_comment_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read review comment body from file (use `-` to read from standard input)",
+    add_body_input_arguments(
+        review_comment_parser,
+        required=True,
+        body_help="review comment body",
+        file_help="read review comment body from file (use `-` to read from standard input)",
     )
     review_comment_parser.add_argument("--pr", help="PR number/url/branch")
     review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -307,16 +310,12 @@ def register_pr_parser(subparsers: Any) -> None:
     review_suggest_parser.add_argument("--path", required=True, help="file path in pull request")
     review_suggest_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
     review_suggest_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
-    review_suggest_body_group = review_suggest_parser.add_mutually_exclusive_group()
-    review_suggest_body_group.add_argument(
-        "--body",
+    add_body_input_arguments(
+        review_suggest_parser,
+        required=False,
+        body_help="review comment body before suggestion block",
+        file_help="read review comment body from file (use `-` to read from standard input)",
         default="Suggested change",
-        help="review comment body before suggestion block",
-    )
-    review_suggest_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read review comment body from file (use `-` to read from standard input)",
     )
     review_suggest_suggestion_group = review_suggest_parser.add_mutually_exclusive_group(required=True)
     review_suggest_suggestion_group.add_argument(
@@ -341,12 +340,12 @@ def register_pr_parser(subparsers: Any) -> None:
         default="COMMENT",
         help="review event type",
     )
-    review_submit_body_group = review_submit_parser.add_mutually_exclusive_group()
-    review_submit_body_group.add_argument("--body", default="", help="review summary body")
-    review_submit_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read review summary body from file (use `-` to read from standard input)",
+    add_body_input_arguments(
+        review_submit_parser,
+        required=False,
+        body_help="review summary body",
+        file_help="read review summary body from file (use `-` to read from standard input)",
+        default="",
     )
     review_submit_parser.add_argument("--pr", help="PR number/url/branch")
     review_submit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -380,7 +379,7 @@ def cmd_pr_view(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
 
-    meta = client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    meta = _resolve_pr_meta(client=client, args=args)
     context = build_context_from_meta(meta=meta, page_size=page_size)
     first_page: TimelinePage | None = None
     last_page: TimelinePage | None = None
@@ -708,10 +707,7 @@ def cmd_pr_conflict_files(args: Any) -> int:
 
 def cmd_pr_thread_reply(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    if args.pr is not None:
-        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    _resolve_optional_pr(client=client, args=args)
 
     body = _resolve_body_argument(args)
     comment_id = client.reply_review_thread(thread_id=str(args.thread_id), body=body)
@@ -724,10 +720,7 @@ def cmd_pr_thread_reply(args: Any) -> int:
 
 def cmd_pr_thread_resolve(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    if args.pr is not None:
-        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    _resolve_optional_pr(client=client, args=args)
 
     resolved = client.resolve_review_thread(thread_id=str(args.thread_id))
     print(f"thread: {args.thread_id}")
@@ -737,10 +730,7 @@ def cmd_pr_thread_resolve(args: Any) -> int:
 
 def cmd_pr_thread_unresolve(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    if args.pr is not None:
-        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    _resolve_optional_pr(client=client, args=args)
 
     resolved = client.unresolve_review_thread(thread_id=str(args.thread_id))
     print(f"thread: {args.thread_id}")
@@ -750,10 +740,7 @@ def cmd_pr_thread_unresolve(args: Any) -> int:
 
 def cmd_pr_comment_edit(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    if args.pr is not None:
-        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    _resolve_optional_pr(client=client, args=args)
     updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=_resolve_body_argument(args))
     print(f"comment: {updated_comment_id}")
     print("status: edited")
@@ -762,10 +749,7 @@ def cmd_pr_comment_edit(args: Any) -> int:
 
 def cmd_pr_comment_expand(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.pr is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    if args.pr is not None:
-        client.resolve_pull_request(selector=args.pr, repo=args.repo)
+    _resolve_optional_pr(client=client, args=args)
     node = client.fetch_comment_node(str(args.comment_id))
     for line in render_comment_node_detail(str(args.comment_id), node):
         print(line)
@@ -1143,14 +1127,10 @@ def cmd_pr_review_submit(args: Any) -> int:
 def _resolve_context_and_meta(
     *, client: GitHubClient, pager: TimelinePager, args: Any
 ) -> tuple[TimelineContext, PullRequestMeta]:
-    selector = getattr(args, "pr", None)
-    repo = getattr(args, "repo", None)
-    if repo is not None and selector is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
     page_size = getattr(args, "page_size", None)
     effective_page_size = DEFAULT_PAGE_SIZE if page_size is None else int(page_size)
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
-    meta = client.resolve_pull_request(selector=selector, repo=repo)
+    meta = _resolve_pr_meta(client=client, args=args)
     context, _, _ = pager.build_initial(
         meta=meta,
         page_size=effective_page_size,
@@ -1263,11 +1243,21 @@ def _parse_show_options(*, raw_values: list[str]) -> _ShowOptions:
 
 
 def _resolve_pr_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
-    selector = getattr(args, "pr", None)
-    repo = getattr(args, "repo", None)
-    if repo is not None and selector is None:
-        raise RuntimeError("`--pr` is required when `--repo` is provided")
-    return client.resolve_pull_request(selector=selector, repo=repo)
+    return resolve_subject(
+        selector=getattr(args, "pr", None),
+        repo=getattr(args, "repo", None),
+        selector_flag="--pr",
+        resolver=client.resolve_pull_request,
+    )
+
+
+def _resolve_optional_pr(*, client: GitHubClient, args: Any) -> PullRequestMeta | None:
+    return maybe_resolve_subject(
+        selector=getattr(args, "pr", None),
+        repo=getattr(args, "repo", None),
+        selector_flag="--pr",
+        resolver=client.resolve_pull_request,
+    )
 
 
 class _DiffHunk:

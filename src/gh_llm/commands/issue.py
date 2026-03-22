@@ -3,9 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from gh_llm.commands.options import raise_unknown_option_value, resolve_file_or_inline_text
+from gh_llm.commands.options import (
+    add_body_input_arguments,
+    maybe_resolve_subject,
+    raise_unknown_option_value,
+    resolve_file_or_inline_text,
+    resolve_subject,
+)
 from gh_llm.github_api import GitHubClient
-from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
+from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager, build_context_from_meta
 from gh_llm.render import (
     render_comment_node_detail,
     render_description,
@@ -86,12 +92,11 @@ def register_issue_parser(subparsers: Any) -> None:
 
     comment_edit_parser = issue_subparsers.add_parser("comment-edit", help="edit one issue comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx")
-    comment_edit_body_group = comment_edit_parser.add_mutually_exclusive_group(required=True)
-    comment_edit_body_group.add_argument("--body", help="new comment body")
-    comment_edit_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read new comment body from file (use `-` to read from standard input)",
+    add_body_input_arguments(
+        comment_edit_parser,
+        required=True,
+        body_help="new comment body",
+        file_help="read new comment body from file (use `-` to read from standard input)",
     )
     comment_edit_parser.add_argument("--issue", help="Issue number/url")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -111,14 +116,20 @@ def cmd_issue_view(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
 
-    meta = client.resolve_issue(selector=args.issue, repo=args.repo)
-    context, first_page, last_page = pager.build_initial(
-        meta,
-        page_size=page_size,
-        show_minimized_details=expand.minimized,
-        show_details_blocks=expand.details,
-    )
-    shown_pages: set[int] = {1}
+    meta = _resolve_issue_meta(client=client, args=args)
+    context = build_context_from_meta(meta=meta, page_size=page_size)
+    first_page: TimelinePage | None = None
+    last_page: TimelinePage | None = None
+    shown_pages: set[int] = set()
+
+    if show.timeline:
+        context, first_page, last_page = pager.build_initial(
+            meta,
+            page_size=page_size,
+            show_minimized_details=expand.minimized,
+            show_details_blocks=expand.details,
+        )
+        shown_pages.add(1)
 
     wrote_output = False
 
@@ -137,6 +148,7 @@ def cmd_issue_view(args: Any) -> int:
     if show.description:
         print_block(render_description(context))
     if show.timeline:
+        assert first_page is not None
         print_block(["## Timeline"])
         print_block(render_page(1, context, first_page))
 
@@ -232,10 +244,7 @@ def cmd_issue_details_expand(args: Any) -> int:
 
 def cmd_issue_comment_edit(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.issue is None:
-        raise RuntimeError("`--issue` is required when `--repo` is provided")
-    if args.issue is not None:
-        client.resolve_issue(selector=args.issue, repo=args.repo)
+    _resolve_optional_issue(client=client, args=args)
     updated_comment_id = client.edit_comment(
         comment_id=str(args.comment_id),
         body=resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file"),
@@ -247,26 +256,37 @@ def cmd_issue_comment_edit(args: Any) -> int:
 
 def cmd_issue_comment_expand(args: Any) -> int:
     client = GitHubClient()
-    if args.repo is not None and args.issue is None:
-        raise RuntimeError("`--issue` is required when `--repo` is provided")
-    if args.issue is not None:
-        client.resolve_issue(selector=args.issue, repo=args.repo)
+    _resolve_optional_issue(client=client, args=args)
     node = client.fetch_comment_node(str(args.comment_id))
     for line in render_comment_node_detail(str(args.comment_id), node):
         print(line)
     return 0
 
 
+def _resolve_issue_meta(*, client: GitHubClient, args: Any) -> PullRequestMeta:
+    return resolve_subject(
+        selector=getattr(args, "issue", None),
+        repo=getattr(args, "repo", None),
+        selector_flag="--issue",
+        resolver=client.resolve_issue,
+    )
+
+
+def _resolve_optional_issue(*, client: GitHubClient, args: Any) -> PullRequestMeta | None:
+    return maybe_resolve_subject(
+        selector=getattr(args, "issue", None),
+        repo=getattr(args, "repo", None),
+        selector_flag="--issue",
+        resolver=client.resolve_issue,
+    )
+
+
 def _resolve_context_and_meta(
     *, client: GitHubClient, pager: TimelinePager, args: Any
 ) -> tuple[TimelineContext, PullRequestMeta]:
-    selector = getattr(args, "issue", None)
-    repo = getattr(args, "repo", None)
-    if repo is not None and selector is None:
-        raise RuntimeError("`--issue` is required when `--repo` is provided")
     page_size = getattr(args, "page_size", None)
     effective_page_size = DEFAULT_PAGE_SIZE if page_size is None else int(page_size)
-    meta = client.resolve_issue(selector=selector, repo=repo)
+    meta = _resolve_issue_meta(client=client, args=args)
     context, _, _ = pager.build_initial(meta=meta, page_size=effective_page_size)
     return context, meta
 

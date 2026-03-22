@@ -123,6 +123,8 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --expand minimized,details
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```
 
+When `--show` does not include `timeline` (for example `--show meta`, `--show summary`, or `--show actions`), both `pr view` and `issue view` stay on the lightweight metadata path and skip timeline bootstrap.
+
 `--expand` values:
 
 - PR: `resolved`, `minimized`, `details`, `all`
