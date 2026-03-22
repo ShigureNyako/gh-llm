@@ -13,6 +13,7 @@ from fnmatch import fnmatchcase
 from typing import cast
 from urllib.parse import quote, urlparse
 
+from gh_llm.diagnostics import GhCommandError
 from gh_llm.invocation import display_command, display_command_with
 from gh_llm.models import (
     CheckItem,
@@ -710,7 +711,12 @@ class GitHubClient:
             cmd.extend(["--repo", repo])
         cmd.extend(["--json", ",".join(fields)])
 
-        payload = _run_command_json(cmd)
+        payload = _run_command_json(
+            cmd,
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
         number = _as_int(payload.get("number"), context="number")
         title = _as_optional_str(payload.get("title")) or ""
         url = _as_optional_str(payload.get("url")) or ""
@@ -815,7 +821,12 @@ class GitHubClient:
             cmd.extend(["--repo", repo])
         cmd.extend(["--json", ",".join(fields)])
 
-        payload = _run_command_json(cmd)
+        payload = _run_command_json(
+            cmd,
+            max_attempts=GRAPHQL_MAX_ATTEMPTS,
+            backoff_base_seconds=GRAPHQL_BACKOFF_BASE_SECONDS,
+            backoff_max_seconds=GRAPHQL_BACKOFF_MAX_SECONDS,
+        )
         number = _as_int(payload.get("number"), context="number")
         title = _as_optional_str(payload.get("title")) or ""
         url = _as_optional_str(payload.get("url")) or ""
@@ -2162,12 +2173,18 @@ def _run_command_json(
 
         stderr = result.stderr.strip()
         if attempt >= attempts or not _is_retryable_gh_error(stderr):
-            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+            raise GhCommandError(
+                cmd=cmd,
+                stderr=stderr,
+                stdout=result.stdout,
+                attempts=attempt,
+                max_attempts=attempts,
+            )
         delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
         if delay > 0:
             time.sleep(delay)
 
-    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
+    raise GhCommandError(cmd=cmd, stderr="", attempts=attempts, max_attempts=attempts)
 
 
 def _run_command_json_any(
@@ -2185,12 +2202,18 @@ def _run_command_json_any(
 
         stderr = result.stderr.strip()
         if attempt >= attempts or not _is_retryable_gh_error(stderr):
-            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+            raise GhCommandError(
+                cmd=cmd,
+                stderr=stderr,
+                stdout=result.stdout,
+                attempts=attempt,
+                max_attempts=attempts,
+            )
         delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
         if delay > 0:
             time.sleep(delay)
 
-    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
+    raise GhCommandError(cmd=cmd, stderr="", attempts=attempts, max_attempts=attempts)
 
 
 def _run_command_text(
@@ -2207,11 +2230,17 @@ def _run_command_text(
             return result.stdout
         stderr = result.stderr.strip()
         if attempt >= attempts or not _is_retryable_gh_error(stderr):
-            raise RuntimeError(stderr or f"command failed: {' '.join(cmd)}")
+            raise GhCommandError(
+                cmd=cmd,
+                stderr=stderr,
+                stdout=result.stdout,
+                attempts=attempt,
+                max_attempts=attempts,
+            )
         delay = min(backoff_max_seconds, backoff_base_seconds * (2 ** (attempt - 1)))
         if delay > 0:
             time.sleep(delay)
-    raise RuntimeError(f"command failed after {attempts} attempts: {' '.join(cmd)}")
+    raise GhCommandError(cmd=cmd, stderr="", attempts=attempts, max_attempts=attempts)
 
 
 def _parse_timeline_page(

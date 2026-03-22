@@ -151,6 +151,20 @@ gh-llm pr thread-resolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 ```
 
+### Environment Diagnosis
+
+```bash
+gh-llm doctor
+gh llm doctor
+```
+
+`doctor` prints the current entrypoint, resolved executable paths, `gh` / `gh-llm` versions,
+active-host `gh auth status`, a REST probe, a minimal GraphQL probe, and proxy-related environment variables.
+
+When `gh-llm` hits transport errors such as GraphQL `EOF` / timeout failures, the CLI now reports the
+retry count and suggests concrete follow-up commands such as `gh auth status`,
+`gh api graphql -f query='query{viewer{login}}'`, and `gh-llm doctor`.
+
 ## PR Review Workflow
 
 ### 1) Start from diff hunks
