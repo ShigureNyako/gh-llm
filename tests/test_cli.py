@@ -429,20 +429,19 @@ class GhResponder:
         return 77928
 
 
-def test_version() -> None:
-    assert __version__ == "0.1.11"
-
-
 def test_doctor_reports_entrypoint_probes_and_env(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    entrypoint_version = __version__
+    gh_version = "gh version test-build"
+
     def fake_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
         del check, capture_output, text
         if cmd == ["gh", "llm", "--version"]:
-            return FakeCompletedProcess("0.1.11\n")
+            return FakeCompletedProcess(f"{entrypoint_version}\n")
         if cmd == ["gh", "--version"]:
-            return FakeCompletedProcess("gh version 2.76.0\nhttps://github.com/cli/cli/releases/tag/v2.76.0\n")
+            return FakeCompletedProcess(f"{gh_version}\nhttps://github.com/cli/cli/releases/tag/test-build\n")
         if cmd == ["gh", "auth", "status", "--active", "--hostname", "github.com"]:
             return FakeCompletedProcess("github.com\n  ✓ Logged in to github.com account ShigureNyako\n")
         if cmd == ["gh", "api", "user"]:
@@ -478,7 +477,7 @@ def test_doctor_reports_entrypoint_probes_and_env(
     assert "- all_proxy: socks5://proxy.example.test:1080" in out
     assert "- no_proxy: localhost,127.0.0.1" in out
     assert "- GH_TOKEN: (set)" in out
-    assert "- entrypoint version (`gh llm --version`): 0.1.11" in out
+    assert f"- entrypoint version (`gh llm --version`): {entrypoint_version}" in out
     assert "- auth status (`gh auth status --active --hostname github.com`): ok" in out
     assert "- REST user probe (`gh api user`): ok (@ShigureNyako)" in out
     assert "- GraphQL viewer probe (`gh api graphql -f query='query{viewer{login}}'`): ok (@ShigureNyako)" in out
@@ -490,14 +489,15 @@ def test_doctor_scopes_auth_status_to_target_host(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     calls: list[list[str]] = []
+    entrypoint_version = __version__
 
     def fake_run(cmd: list[str], *, check: bool, capture_output: bool, text: bool) -> FakeCompletedProcess:
         del check, capture_output, text
         calls.append(cmd)
         if cmd == ["gh", "llm", "--version"]:
-            return FakeCompletedProcess("0.1.11\n")
+            return FakeCompletedProcess(f"{entrypoint_version}\n")
         if cmd == ["gh", "--version"]:
-            return FakeCompletedProcess("gh version 2.76.0\n")
+            return FakeCompletedProcess("gh version test-build\n")
         if cmd == ["gh", "auth", "status", "--active", "--hostname", "github.example.com"]:
             return FakeCompletedProcess("github.example.com\n  ✓ Logged in to github.example.com account neko\n")
         if cmd == ["gh", "api", "user"]:
