@@ -141,7 +141,9 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```bash
 # Edit comment
 gh-llm pr comment-edit IC_xxx --body '<new_body>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr comment-edit IC_xxx --body-file edit.md --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm issue comment-edit IC_xxx --body '<new_body>' --issue 77924 --repo PaddlePaddle/Paddle
+gh-llm issue comment-edit IC_xxx --body-file edit.md --issue 77924 --repo PaddlePaddle/Paddle
 
 # Reply / resolve / unresolve review thread
 gh-llm pr thread-reply PRRT_xxx --body '<reply>' --pr 77900 --repo PaddlePaddle/Paddle
@@ -231,6 +233,14 @@ gh-llm pr review-suggest \
   --body-file suggestion-reason.md \
   --suggestion 'replacement_code_here' \
   --pr 77938 --repo PaddlePaddle/Paddle
+
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line 123 \
+  --side RIGHT \
+  --body-file suggestion-reason.md \
+  --suggestion-file replacement.txt \
+  --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
 ### 4) Submit review
@@ -247,7 +257,9 @@ gh-llm pr review-submit \
   --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
-`thread-reply`, `review-comment`, `review-suggest`, and `review-submit` all support `--body-file -` to read multi-line text from standard input.
+`pr comment-edit`, `issue comment-edit`, `thread-reply`, `review-comment`, `review-suggest`, and `review-submit` all support `--body-file -` to read multi-line text from standard input. `review-suggest` also supports `--suggestion-file -` for the suggestion block itself.
+
+> Note: `review-suggest --body-file - --suggestion-file -` is intentionally rejected because standard input can only be consumed once. Use separate files when both the reason text and suggestion block need external input.
 
 Submit behavior:
 

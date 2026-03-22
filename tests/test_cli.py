@@ -8,7 +8,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from gh_llm import __version__, cli, github_api
-from gh_llm.commands import doctor as doctor_commands, pr as pr_commands
+from gh_llm.commands import doctor as doctor_commands, options as command_options, pr as pr_commands
 from gh_llm.models import ReviewThreadSummary
 
 if TYPE_CHECKING:
@@ -2676,6 +2676,225 @@ def _repo_branch_payload(path: str) -> dict[str, Any] | None:
             },
         },
     }
+
+
+def test_pr_comment_edit_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "edit.md"
+    body_file.write_text("updated body from file\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "comment-edit",
+            "PRRC_self_1",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: edited" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    edit_call = next(call for call in graphql_calls if "updatePullRequestReviewComment" in _extract_form(call, "query"))
+    assert _extract_field(edit_call, "body") == "updated body from file\n"
+
+
+def test_issue_comment_edit_supports_body_file_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("updated issue body from stdin\n"))
+
+    code = cli.run(
+        [
+            "issue",
+            "comment-edit",
+            "ic2",
+            "--body-file",
+            "-",
+            "--issue",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: edited" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    edit_call = next(call for call in graphql_calls if "updateIssueComment" in _extract_form(call, "query"))
+    assert _extract_field(edit_call, "body") == "updated issue body from stdin\n"
+
+
+def test_pr_comment_edit_rejects_body_and_body_file_together(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    body_file = tmp_path / "edit.md"
+    body_file.write_text("updated body from file\n", encoding="utf-8")
+
+    try:
+        cli.run(
+            [
+                "pr",
+                "comment-edit",
+                "PRRC_self_1",
+                "--body",
+                "inline body",
+                "--body-file",
+                str(body_file),
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected argparse to reject --body with --body-file")
+
+    err = capsys.readouterr().err
+    assert "argument -F/--body-file: not allowed with argument --body" in err
+
+
+def test_pr_review_suggest_supports_suggestion_file_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    reason_file = tmp_path / "reason.md"
+    reason_file.write_text("nits from file\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("replacement_from_stdin()\nsecond_line()\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            str(reason_file),
+            "--suggestion-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: suggested" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert (
+        _extract_field(review_call, "body")
+        == "nits from file\n\n```suggestion\nreplacement_from_stdin()\nsecond_line()\n```"
+    )
+
+
+def test_pr_review_suggest_rejects_suggestion_and_suggestion_file_together(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    suggestion_file = tmp_path / "replacement.txt"
+    suggestion_file.write_text("replacement_from_file()\n", encoding="utf-8")
+
+    try:
+        cli.run(
+            [
+                "pr",
+                "review-suggest",
+                "--path",
+                "python/test_file.py",
+                "--line",
+                "20",
+                "--side",
+                "RIGHT",
+                "--suggestion",
+                "inline_replacement()",
+                "--suggestion-file",
+                str(suggestion_file),
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("expected argparse to reject --suggestion with --suggestion-file")
+
+    err = capsys.readouterr().err
+    assert "argument --suggestion-file: not allowed with argument --suggestion" in err
+
+
+def test_pr_review_suggest_rejects_dual_stdin_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("shared stdin\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            "-",
+            "--suggestion-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "`--body-file -` cannot be combined with `--suggestion-file -`" in err
+    assert not any(call[:3] == ["gh", "api", "graphql"] for call in responder.calls)
+
+
+def test_resolve_file_or_inline_text_treats_empty_file_path_as_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def fake_read_text_from_path_or_stdin(path: str) -> str:
+        seen.append(path)
+        return "from file"
+
+    monkeypatch.setattr(command_options, "read_text_from_path_or_stdin", fake_read_text_from_path_or_stdin)
+    args = argparse.Namespace(body="inline body", body_file="")
+
+    resolved = command_options.resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file")
+
+    assert resolved == "from file"
+    assert seen == [""]
 
 
 def _extract_form(cmd: list[str], key: str) -> str:

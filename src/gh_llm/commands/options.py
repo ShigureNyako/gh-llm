@@ -1,7 +1,31 @@
 from __future__ import annotations
 
+import sys
 from difflib import get_close_matches
-from typing import NoReturn
+from pathlib import Path
+from typing import Any, NoReturn
+
+
+def read_text_from_path_or_stdin(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
+def resolve_file_or_inline_text(
+    args: Any,
+    *,
+    text_attr: str,
+    file_attr: str,
+    default: str = "",
+) -> str:
+    file_path = getattr(args, file_attr, None)
+    if file_path is not None:
+        return read_text_from_path_or_stdin(str(file_path))
+    text = getattr(args, text_attr, None)
+    if text is None:
+        return default
+    return str(text)
 
 
 def raise_unknown_option_value(

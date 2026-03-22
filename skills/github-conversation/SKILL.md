@@ -103,6 +103,9 @@ gh-llm issue timeline-expand <page> --issue <issue> --repo <owner/repo>
 ```bash
 gh pr comment <pr> --repo <owner/repo> --body '<comment>'
 gh issue comment <issue> --repo <owner/repo> --body '<comment>'
+gh-llm pr comment-edit <comment_id> --body-file edit.md --pr <pr> --repo <owner/repo>
+gh-llm issue comment-edit <comment_id> --body-file edit.md --issue <issue> --repo <owner/repo>
+cat edit.md | gh-llm issue comment-edit <comment_id> --body-file - --issue <issue> --repo <owner/repo>
 gh pr edit <pr> --repo <owner/repo> --add-label '<label1>,<label2>'
 gh pr edit <pr> --repo <owner/repo> --remove-label '<label1>,<label2>'
 gh pr edit <pr> --repo <owner/repo> --add-reviewer '<reviewer1>,<reviewer2>'
@@ -217,6 +220,14 @@ gh-llm pr review-suggest \
   --side RIGHT \
   --body '<why>' \
   --suggestion '<replacement>' \
+  --pr <pr> --repo <owner/repo>
+
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line <line> \
+  --side RIGHT \
+  --body-file reason.md \
+  --suggestion-file replacement.txt \
   --pr <pr> --repo <owner/repo>
 ```
 
