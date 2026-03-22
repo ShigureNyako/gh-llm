@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from gh_llm.commands.options import raise_unknown_option_value
+from gh_llm.commands.options import raise_unknown_option_value, resolve_file_or_inline_text
 from gh_llm.github_api import GitHubClient
 from gh_llm.pager import DEFAULT_PAGE_SIZE, TimelinePager
 from gh_llm.render import (
@@ -86,7 +86,13 @@ def register_issue_parser(subparsers: Any) -> None:
 
     comment_edit_parser = issue_subparsers.add_parser("comment-edit", help="edit one issue comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx")
-    comment_edit_parser.add_argument("--body", required=True, help="new comment body")
+    comment_edit_body_group = comment_edit_parser.add_mutually_exclusive_group(required=True)
+    comment_edit_body_group.add_argument("--body", help="new comment body")
+    comment_edit_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read new comment body from file (use `-` to read from standard input)",
+    )
     comment_edit_parser.add_argument("--issue", help="Issue number/url")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_issue_comment_edit)
@@ -230,7 +236,10 @@ def cmd_issue_comment_edit(args: Any) -> int:
         raise RuntimeError("`--issue` is required when `--repo` is provided")
     if args.issue is not None:
         client.resolve_issue(selector=args.issue, repo=args.repo)
-    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
+    updated_comment_id = client.edit_comment(
+        comment_id=str(args.comment_id),
+        body=resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file"),
+    )
     print(f"comment: {updated_comment_id}")
     print("status: edited")
     return 0

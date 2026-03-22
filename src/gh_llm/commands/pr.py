@@ -4,13 +4,12 @@ import json
 import os
 import re
 import shlex
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from gh_llm.commands.options import raise_unknown_option_value
+from gh_llm.commands.options import raise_unknown_option_value, resolve_file_or_inline_text
 from gh_llm.github_api import GitHubClient
 from gh_llm.invocation import display_command_with
 from gh_llm.models import PullRequestDiffPage
@@ -221,7 +220,13 @@ def register_pr_parser(subparsers: Any) -> None:
 
     comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit one issue/review comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
-    comment_edit_parser.add_argument("--body", required=True, help="new comment body")
+    comment_edit_body_group = comment_edit_parser.add_mutually_exclusive_group(required=True)
+    comment_edit_body_group.add_argument("--body", help="new comment body")
+    comment_edit_body_group.add_argument(
+        "-F",
+        "--body-file",
+        help="read new comment body from file (use `-` to read from standard input)",
+    )
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_pr_comment_edit)
@@ -313,10 +318,14 @@ def register_pr_parser(subparsers: Any) -> None:
         "--body-file",
         help="read review comment body from file (use `-` to read from standard input)",
     )
-    review_suggest_parser.add_argument(
+    review_suggest_suggestion_group = review_suggest_parser.add_mutually_exclusive_group(required=True)
+    review_suggest_suggestion_group.add_argument(
         "--suggestion",
-        required=True,
         help="replacement content inserted inside ```suggestion block",
+    )
+    review_suggest_suggestion_group.add_argument(
+        "--suggestion-file",
+        help="read replacement content from file (use `-` to read from standard input)",
     )
     review_suggest_parser.add_argument("--head", help="expected PR head sha for stale-snapshot protection")
     review_suggest_parser.add_argument("--pr", help="PR number/url/branch")
@@ -344,20 +353,12 @@ def register_pr_parser(subparsers: Any) -> None:
     review_submit_parser.set_defaults(handler=cmd_pr_review_submit)
 
 
-def _read_body_file(path: str) -> str:
-    if path == "-":
-        return sys.stdin.read()
-    return Path(path).read_text(encoding="utf-8")
-
-
 def _resolve_body_argument(args: Any, *, default: str = "") -> str:
-    body_file = getattr(args, "body_file", None)
-    if body_file:
-        return _read_body_file(str(body_file))
-    body = getattr(args, "body", None)
-    if body is None:
-        return default
-    return str(body)
+    return resolve_file_or_inline_text(args, text_attr="body", file_attr="body_file", default=default)
+
+
+def _resolve_suggestion_argument(args: Any) -> str:
+    return resolve_file_or_inline_text(args, text_attr="suggestion", file_attr="suggestion_file")
 
 
 def _resolve_review_submit_body(args: Any) -> str:
@@ -746,7 +747,7 @@ def cmd_pr_comment_edit(args: Any) -> int:
         raise RuntimeError("`--pr` is required when `--repo` is provided")
     if args.pr is not None:
         client.resolve_pull_request(selector=args.pr, repo=args.repo)
-    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
+    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=_resolve_body_argument(args))
     print(f"comment: {updated_comment_id}")
     print("status: edited")
     return 0
@@ -1096,7 +1097,7 @@ def cmd_pr_review_suggest(args: Any) -> int:
         start_line=start_line,
         start_side=start_side,
     )
-    suggestion = str(args.suggestion).rstrip("\n")
+    suggestion = _resolve_suggestion_argument(args).rstrip("\n")
     body = _resolve_body_argument(args, default="Suggested change")
     full_body = f"{body.rstrip()}\n\n```suggestion\n{suggestion}\n```"
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
