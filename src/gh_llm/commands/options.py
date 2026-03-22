@@ -20,7 +20,7 @@ def resolve_file_or_inline_text(
     default: str = "",
 ) -> str:
     file_path = getattr(args, file_attr, None)
-    if file_path:
+    if file_path is not None:
         return read_text_from_path_or_stdin(str(file_path))
     text = getattr(args, text_attr, None)
     if text is None:

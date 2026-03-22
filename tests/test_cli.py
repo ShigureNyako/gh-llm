@@ -2844,6 +2844,42 @@ def test_pr_review_suggest_rejects_suggestion_and_suggestion_file_together(
     err = capsys.readouterr().err
     assert "argument --suggestion-file: not allowed with argument --suggestion" in err
 
+
+def test_pr_review_suggest_rejects_dual_stdin_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("shared stdin\n"))
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            "-",
+            "--suggestion-file",
+            "-",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "`--body-file -` cannot be combined with `--suggestion-file -`" in err
+    assert not any(call[:3] == ["gh", "api", "graphql"] for call in responder.calls)
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):

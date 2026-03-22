@@ -259,6 +259,8 @@ gh-llm pr review-submit \
 
 `pr comment-edit`, `issue comment-edit`, `thread-reply`, `review-comment`, `review-suggest`, and `review-submit` all support `--body-file -` to read multi-line text from standard input. `review-suggest` also supports `--suggestion-file -` for the suggestion block itself.
 
+> Note: `review-suggest --body-file - --suggestion-file -` is intentionally rejected because standard input can only be consumed once. Use separate files when both the reason text and suggestion block need external input.
+
 Submit behavior:
 
 - If you already have a pending review on this PR, `review-submit` submits that pending review.

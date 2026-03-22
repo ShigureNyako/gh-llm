@@ -361,6 +361,13 @@ def _resolve_suggestion_argument(args: Any) -> str:
     return resolve_file_or_inline_text(args, text_attr="suggestion", file_attr="suggestion_file")
 
 
+def _validate_review_suggest_stdin_sources(args: Any) -> None:
+    if getattr(args, "body_file", None) == "-" and getattr(args, "suggestion_file", None) == "-":
+        raise RuntimeError(
+            "`--body-file -` cannot be combined with `--suggestion-file -`; standard input can only be consumed once"
+        )
+
+
 def _resolve_review_submit_body(args: Any) -> str:
     return _resolve_body_argument(args)
 
@@ -1083,6 +1090,7 @@ def cmd_pr_review_comment(args: Any) -> int:
 
 
 def cmd_pr_review_suggest(args: Any) -> int:
+    _validate_review_suggest_stdin_sources(args)
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
     _validate_pr_head_snapshot(meta=meta, requested_head=_resolve_requested_head(args))
