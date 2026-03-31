@@ -68,12 +68,12 @@ class _ShowOptions:
 
 
 def register_pr_parser(subparsers: Any) -> None:
-    pr_parser = subparsers.add_parser("pr", help="PR-related commands")
+    pr_parser = subparsers.add_parser("pr", help="pull request reading, review, and actions")
     pr_subparsers = pr_parser.add_subparsers(dest="pr_command")
 
     view_parser = pr_subparsers.add_parser(
         "view",
-        help="show first/last timeline page with real GitHub cursor pagination",
+        help="show PR overview with timeline, checks, and actions",
     )
     view_parser.add_argument("pr", nargs="?", help="PR number/url/branch")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -98,7 +98,7 @@ def register_pr_parser(subparsers: Any) -> None:
     )
     view_parser.set_defaults(handler=cmd_pr_view)
 
-    timeline_expand_parser = pr_subparsers.add_parser("timeline-expand", help="load one timeline page by number")
+    timeline_expand_parser = pr_subparsers.add_parser("timeline-expand", help="expand a specific timeline page")
     timeline_expand_parser.add_argument("page", type=int, help="1-based page number")
     timeline_expand_parser.add_argument("--pr", help="PR number/url/branch")
     timeline_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -129,7 +129,7 @@ def register_pr_parser(subparsers: Any) -> None:
 
     review_expand_parser = pr_subparsers.add_parser(
         "review-expand",
-        help="expand resolved review comments for one or more review IDs",
+        help="expand review conversations for one or more review IDs",
     )
     review_expand_parser.add_argument(
         "review_ids",
@@ -163,7 +163,7 @@ def register_pr_parser(subparsers: Any) -> None:
     )
     thread_expand_parser.set_defaults(handler=cmd_pr_thread_expand)
 
-    checks_parser = pr_subparsers.add_parser("checks", help="show CI checks for the pull request")
+    checks_parser = pr_subparsers.add_parser("checks", help="show CI check status for the PR")
     checks_parser.add_argument("--pr", help="PR number/url/branch")
     checks_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     checks_parser.add_argument("--all", action="store_true", help="show all checks including passed")
@@ -223,7 +223,7 @@ def register_pr_parser(subparsers: Any) -> None:
     thread_unresolve_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_unresolve_parser.set_defaults(handler=cmd_pr_thread_unresolve)
 
-    comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit one issue/review comment by node id")
+    comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit a comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
     add_body_input_arguments(
         comment_edit_parser,
@@ -243,7 +243,7 @@ def register_pr_parser(subparsers: Any) -> None:
 
     review_start_parser = pr_subparsers.add_parser(
         "review-start",
-        help="show review-oriented diff hunks and ready-to-run comment/suggestion commands",
+        help="start a code review with diff hunks and inline comment templates",
     )
     review_start_parser.add_argument("--pr", help="PR number/url/branch")
     review_start_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -280,7 +280,7 @@ def register_pr_parser(subparsers: Any) -> None:
     review_start_parser.set_defaults(handler=cmd_pr_review_start)
 
     review_comment_parser = pr_subparsers.add_parser(
-        "review-comment", help="add one inline review comment at a specific line or line range"
+        "review-comment", help="add an inline review comment on a diff line or range"
     )
     review_comment_parser.add_argument("--path", required=True, help="file path in pull request")
     review_comment_parser.add_argument("--line", required=True, type=int, help="ending line number on selected side")
@@ -305,7 +305,7 @@ def register_pr_parser(subparsers: Any) -> None:
     review_comment_parser.set_defaults(handler=cmd_pr_review_comment)
 
     review_suggest_parser = pr_subparsers.add_parser(
-        "review-suggest", help="add one inline review suggestion at a specific line"
+        "review-suggest", help="add an inline code suggestion on a diff line"
     )
     review_suggest_parser.add_argument("--path", required=True, help="file path in pull request")
     review_suggest_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
@@ -332,7 +332,7 @@ def register_pr_parser(subparsers: Any) -> None:
     review_suggest_parser.set_defaults(handler=cmd_pr_review_suggest)
 
     review_submit_parser = pr_subparsers.add_parser(
-        "review-submit", help="submit a top-level PR review (approve/request changes/comment)"
+        "review-submit", help="submit a PR review (approve, request changes, or comment)"
     )
     review_submit_parser.add_argument(
         "--event",

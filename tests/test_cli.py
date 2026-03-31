@@ -1880,15 +1880,14 @@ def test_cli_unexpected_error_shows_issue_guidance(
     assert code == 1
     err = capsys.readouterr().err
     assert "unexpected error: 'boom'" in err
-    assert "This looks like an unexpected gh-llm failure." in err
+    assert "This is an unexpected gh-llm failure. Please consider reporting it." in err
+    assert "Command: gh-llm" in err
     assert "⌨ issue_title: '<short summary>'" in err
     assert "⌨ issue_body: '<what happened, expected result, actual result>'" in err
     assert (
-        "⏎ Create issue via gh: `gh issue create --repo ShigureLab/gh-llm --title '<short summary>' --body '<what happened, expected result, actual result>'`"
+        "⏎ Report via gh: `gh issue create --repo ShigureLab/gh-llm --title '<short summary>' --body '<what happened, expected result, actual result>'`"
         in err
     )
-    assert "If useful, include the command that triggered it:" in err
-    assert "gh-llm" in err
 
 
 def test_graphql_eof_retries_with_backoff(

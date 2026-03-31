@@ -43,12 +43,12 @@ class _ShowOptions:
 
 
 def register_issue_parser(subparsers: Any) -> None:
-    issue_parser = subparsers.add_parser("issue", help="Issue-related commands")
+    issue_parser = subparsers.add_parser("issue", help="issue reading and actions")
     issue_subparsers = issue_parser.add_subparsers(dest="issue_command")
 
     view_parser = issue_subparsers.add_parser(
         "view",
-        help="show first/last timeline page with real GitHub cursor pagination",
+        help="show issue overview with timeline and actions",
     )
     view_parser.add_argument("issue", nargs="?", help="Issue number/url")
     view_parser.add_argument("--repo", help="repository in OWNER/REPO format")
@@ -103,7 +103,7 @@ def register_issue_parser(subparsers: Any) -> None:
     comment_edit_parser.set_defaults(handler=cmd_issue_comment_edit)
 
     comment_expand_parser = issue_subparsers.add_parser("comment-expand", help="expand one comment by node id")
-    comment_expand_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
+    comment_expand_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx")
     comment_expand_parser.add_argument("--issue", help="Issue number/url")
     comment_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_expand_parser.set_defaults(handler=cmd_issue_comment_expand)

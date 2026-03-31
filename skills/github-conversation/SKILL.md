@@ -48,6 +48,8 @@ Command prefix mapping:
 1. If installed via `uv tool`, use `gh-llm ...`.
 2. If installed as `gh` extension, use `gh llm ...`.
 
+Examples below use `gh-llm` for brevity; substitute `gh llm` if you installed the GitHub CLI extension.
+
 ### Environment preflight / troubleshooting
 
 When `gh-llm` fails with unclear transport or auth symptoms (for example GraphQL `EOF`, timeout, or an environment mismatch between `gh-llm` and `gh llm`), run:

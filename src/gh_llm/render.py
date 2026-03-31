@@ -101,7 +101,7 @@ def render_description(context: TimelineContext) -> list[str]:
 def render_page(page_number: int, context: TimelineContext, page: TimelinePage) -> list[str]:
     lines = [f"### Page {page_number}/{context.total_pages}"]
     if not page.items:
-        lines.append("(no timeline events)")
+        lines.append("(no events on this page)")
         return lines
 
     start_index = _page_start_index(page_number=page_number, context=context, page=page)
@@ -168,11 +168,16 @@ def render_pr_actions(context: TimelineContext, *, include_diff: bool = True, in
 
 def render_issue_actions(context: TimelineContext) -> list[str]:
     repo = f"{context.owner}/{context.name}"
+    close_or_reopen_lines: list[str] = []
+    if context.state == "OPEN":
+        close_or_reopen_lines.append(f"⏎ Close issue via gh: `gh issue close {context.number} --repo {repo}`")
+    elif context.state == "CLOSED":
+        close_or_reopen_lines.append(f"⏎ Reopen issue via gh: `gh issue reopen {context.number} --repo {repo}`")
     return [
         "## Actions",
         "⌨ comment_body: '<comment_body>'",
         f"⏎ Comment via gh: `gh issue comment {context.number} --repo {repo} --body '<comment_body>'`",
-        f"⏎ Close issue via gh: `gh issue close {context.number} --repo {repo}`",
+        *close_or_reopen_lines,
         "⌨ labels_csv: '<label1>,<label2>'",
         f"⏎ Add labels via gh: `gh issue edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
         f"⏎ Remove labels via gh: `gh issue edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",

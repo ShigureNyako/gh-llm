@@ -1,6 +1,6 @@
 # gh-llm
 
-CLI tooling for LLM-first GitHub reading and review workflows.
+Structured GitHub context for LLMs — read PRs, issues, and repos the way GitHub Web shows them, as LLM-friendly text with actionable commands.
 
 <p align="center">
   <a href="https://python.org/" target="_blank"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/gh-llm?logo=python&style=flat-square"></a>
@@ -15,20 +15,15 @@ CLI tooling for LLM-first GitHub reading and review workflows.
 
 ## Core Goal
 
-`gh-llm` is primarily built to help an LLM quickly capture the same key context a human reviewer would get on GitHub Web, and provide actionable next commands at exactly the right places.
+`gh-llm` gives you (or your AI agent) the same context a human reviewer gets on GitHub Web — rendered as structured text with ready-to-run follow-up commands at every decision point.
 
 ## Key Ideas
 
-- Timeline-first rendering:
-  merge comments, reviews, commits, labels, references, force-push, and state changes into one ordered stream that mirrors GitHub Web reading.
-- Real cursor pagination:
-  use GitHub GraphQL `first/after` and `last/before`, so page expansion always pulls real server-side data instead of fake local slicing.
-- Progressive context loading:
-  show first + last page first (high-signal summary), then expand hidden pages/events only when needed.
-- Action-oriented output:
-  place ready-to-run `gh` / `gh-llm` commands at decision points (expand, view detail, reply, resolve, review).
-- Stateless interaction model:
-  no fragile local session state required between commands.
+- **Timeline-first rendering** — Comments, reviews, commits, labels, references, force-pushes, and state changes merge into one ordered stream that mirrors the GitHub Web experience.
+- **Real cursor pagination** — Uses GitHub GraphQL `first/after` and `last/before` cursors, so page expansion always fetches real server-side data instead of slicing locally.
+- **Progressive context loading** — Shows the first + last page first (high-signal summary), then expands hidden pages or events only on request.
+- **Action-oriented output** — Places ready-to-run `gh` / `gh-llm` commands at decision points: expand, view detail, reply, resolve, review.
+- **Stateless interaction model** — No fragile local session state between commands.
 
 ## Requirements
 
@@ -66,6 +61,8 @@ npx skills add https://github.com/ShigureLab/gh-llm --skill github-conversation
 
 ### PR Reading
 
+Read a PR's full timeline — metadata, comments, reviews, checks — with progressive expansion:
+
 ```bash
 # Show first + last timeline pages with actionable hints
 gh-llm pr view 77900 --repo PaddlePaddle/Paddle
@@ -99,6 +96,8 @@ gh-llm pr conflict-files --pr 77971 --repo PaddlePaddle/Paddle
 
 ### PR Body Scaffold
 
+Generate a PR body from the repo's template (or a default scaffold) with required sections pre-filled:
+
 ```bash
 # Load the repo PR template (when present), append required sections, and write a body file
 # The command also prints a ready-to-run `gh pr create --body-file ...` command.
@@ -115,6 +114,8 @@ The bundled `skills/github-conversation/SKILL.md` also documents this workflow f
 
 ### Issue Reading
 
+Issue reading works the same way as PR reading — timeline view with progressive expansion:
+
 ```bash
 gh-llm issue view 77924 --repo PaddlePaddle/Paddle
 gh-llm issue timeline-expand 2 --issue 77924 --repo PaddlePaddle/Paddle
@@ -124,6 +125,8 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```
 
 When `--show` does not include `timeline` (for example `--show meta`, `--show summary`, or `--show actions`), both `pr view` and `issue view` stay on the lightweight metadata path and skip timeline bootstrap.
+
+Use `--show` to choose which output sections to render. Use `--expand` to automatically open folded content within those sections.
 
 `--expand` values:
 
@@ -139,6 +142,8 @@ When `--show` does not include `timeline` (for example `--show meta`, `--show su
 - `summary` is supported as an alias for `meta,description`.
 
 ### Comment / Thread Actions
+
+Edit comments, reply to review threads, and resolve/unresolve threads directly from the CLI:
 
 ```bash
 # Edit comment
@@ -157,6 +162,8 @@ gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 
 ### Environment Diagnosis
 
+Verify your setup — `doctor` checks `gh` auth, connectivity, and proxy configuration:
+
 ```bash
 gh-llm doctor
 gh llm doctor
@@ -170,6 +177,8 @@ retry count and suggests concrete follow-up commands such as `gh auth status`,
 `gh api graphql -f query='query{viewer{login}}'`, and `gh-llm doctor`.
 
 ## PR Review Workflow
+
+A complete code review in four steps — start from diff hunks, add inline comments or suggestions, then submit:
 
 ### 1) Start from diff hunks
 
@@ -272,10 +281,12 @@ This supports the normal flow where one review contains multiple inline comments
 
 ## Render Conventions
 
-- PR/Issue metadata is rendered as frontmatter.
-- Description uses `<description>...</description>`.
-- Comment body uses `<comment>...</comment>` to avoid markdown fence ambiguity.
-- Hidden timeline sections are separated by `---` and include expand commands.
+All output follows consistent formatting rules so both humans and LLMs can parse it reliably:
+
+- **Metadata** is rendered as YAML-style frontmatter at the top of PR/issue views.
+- **Description** is wrapped in `<description>...</description>` tags.
+- **Comment bodies** use `<comment>...</comment>` tags to avoid markdown fence ambiguity with code blocks inside comments.
+- **Hidden timeline sections** are separated by `---` dividers and include ready-to-run expand commands to load the omitted content.
 
 ## Development
 

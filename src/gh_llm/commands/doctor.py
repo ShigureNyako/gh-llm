@@ -55,7 +55,7 @@ class _ProbeResult:
 def register_doctor_parser(subparsers: Any) -> None:
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="show environment, auth, and connectivity diagnostics",
+        help="diagnose environment, authentication, and connectivity",
     )
     doctor_parser.set_defaults(handler=cmd_doctor)
 

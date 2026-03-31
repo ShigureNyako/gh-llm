@@ -10,12 +10,12 @@ if TYPE_CHECKING:
 
 
 def register_repo_parser(subparsers: Any) -> None:
-    repo_parser = subparsers.add_parser("repo", help="Repository-level onboarding commands")
+    repo_parser = subparsers.add_parser("repo", help="repository-level onboarding and preflight checks")
     repo_subparsers = repo_parser.add_subparsers(dest="repo_command")
 
     preflight_parser = repo_subparsers.add_parser(
         "preflight",
-        help="show repo-level preflight summary",
+        help="show repository onboarding summary (docs, protection, permissions)",
     )
     preflight_parser.add_argument("--repo", required=True, help="repository in OWNER/REPO format")
     preflight_parser.set_defaults(handler=cmd_repo_preflight)
