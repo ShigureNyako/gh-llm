@@ -56,7 +56,7 @@ FORWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(first:$pageSize,after:$after,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,REVIEW_DISMISSED_EVENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -79,6 +79,16 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$after:String){
             isMinimized
             minimizedReason
             author{login ... on User{name}}
+          }
+          ... on ReviewDismissedEvent{
+            id
+            createdAt
+            dismissalMessage
+            actor{login ... on User{name}}
+            review{
+              author{login ... on User{name}}
+              submittedAt
+            }
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
           ... on CrossReferencedEvent{
@@ -257,7 +267,7 @@ BACKWARD_TIMELINE_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
+      timelineItems(last:$pageSize,before:$before,itemTypes:[ISSUE_COMMENT,PULL_REQUEST_REVIEW,PULL_REQUEST_COMMIT,REVIEW_DISMISSED_EVENT,CROSS_REFERENCED_EVENT,REFERENCED_EVENT,LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT,HEAD_REF_FORCE_PUSHED_EVENT,MERGED_EVENT,CLOSED_EVENT,REOPENED_EVENT]){
         totalCount
         pageInfo{hasNextPage hasPreviousPage startCursor endCursor}
         nodes{
@@ -280,6 +290,16 @@ query($owner:String!,$name:String!,$number:Int!,$pageSize:Int!,$before:String){
             isMinimized
             minimizedReason
             author{login ... on User{name}}
+          }
+          ... on ReviewDismissedEvent{
+            id
+            createdAt
+            dismissalMessage
+            actor{login ... on User{name}}
+            review{
+              author{login ... on User{name}}
+              submittedAt
+            }
           }
           ... on PullRequestCommit{ commit{ oid committedDate messageHeadline message authors(first:1){nodes{name user{login}}} } }
           ... on CrossReferencedEvent{
@@ -2383,6 +2403,31 @@ def _parse_node(
             minimized_hidden_count=minimized_hidden_count,
             minimized_hidden_reasons=minimized_hidden_reasons,
             details_collapsed_count=details_collapsed_count,
+        )
+
+    if typename == "ReviewDismissedEvent":
+        review_obj = _as_dict_optional(node.get("review"))
+        review_author = _get_actor_display(review_obj.get("author")) if review_obj is not None else "unknown"
+        actor = _get_actor_display(node.get("actor"))
+        dismissal_message = (_as_optional_str(node.get("dismissalMessage")) or "").strip()
+        submitted_at = (_as_optional_str(review_obj.get("submittedAt")) if review_obj is not None else "") or ""
+        if actor == review_author and actor != "unknown":
+            summary_lines = ["dismissed their stale review"]
+        elif review_author != "unknown":
+            summary_lines = [f"dismissed stale review from @{review_author}"]
+        else:
+            summary_lines = ["dismissed stale review"]
+        if submitted_at:
+            summary_lines.append(f"original review submitted at {submitted_at}")
+        if dismissal_message:
+            summary_lines.append(f"message: {dismissal_message}")
+        return TimelineEvent(
+            timestamp=_parse_datetime(_as_optional_str(node.get("createdAt"))),
+            kind="review/dismissed",
+            actor=actor,
+            summary="\n".join(summary_lines),
+            source_id=_as_optional_str(node.get("id")) or "review/dismissed",
+            full_text="\n".join(summary_lines),
         )
 
     if typename == "PullRequestCommit":

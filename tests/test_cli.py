@@ -865,13 +865,34 @@ def test_title_renamed_event_is_rendered(
     monkeypatch.setattr(github_api.subprocess, "run", responder.run)
     monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
 
-    code = cli.run(["pr", "timeline-expand", "7", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    code = cli.run(["pr", "timeline-expand", "8", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
     assert code == 0
     out = capsys.readouterr().out
     assert "pr/title-edited" in out
     assert "title changed" in out
     assert "from: Old title" in out
     assert "to: New title" in out
+
+
+def test_review_dismissed_event_is_rendered_after_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setattr(sys.modules[__name__], "_events", _events_with_web_like_extras)
+
+    code = cli.run(["pr", "timeline-expand", "7", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "push/commit" in out
+    assert "review/dismissed" in out
+    assert "dismissed their stale review" in out
+    assert out.index("push/commit") < out.index("review/dismissed")
+
+    graphql_queries = [_extract_form(call, "query") for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    assert any("REVIEW_DISMISSED_EVENT" in query for query in graphql_queries)
 
 
 def test_issue_view_summary_and_actions_skip_timeline_bootstrap(
@@ -3564,6 +3585,26 @@ def _events_with_web_like_extras() -> list[dict[str, Any]]:
             "ref": {"name": "feature-branch"},
             "beforeCommit": {"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "afterCommit": {"oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+        },
+        {
+            "__typename": "PullRequestCommit",
+            "commit": {
+                "oid": "oid-3",
+                "committedDate": "2026-02-14T15:15:10Z",
+                "messageHeadline": "commit 3",
+                "authors": {"nodes": [{"name": "Author One", "user": {"login": "author1"}}]},
+            },
+        },
+        {
+            "__typename": "ReviewDismissedEvent",
+            "id": "rd1",
+            "createdAt": "2026-02-14T15:15:20Z",
+            "dismissalMessage": None,
+            "actor": {"login": "reviewer"},
+            "review": {
+                "author": {"login": "reviewer"},
+                "submittedAt": "2026-02-14T14:51:00Z",
+            },
         },
         {
             "__typename": "RenamedTitleEvent",
