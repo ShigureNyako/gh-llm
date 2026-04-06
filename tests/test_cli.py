@@ -570,7 +570,10 @@ def test_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
         in out
     )
-    assert "Multi-line edit via gh-llm: `gh-llm pr comment-edit c3 --body-file <comment.md> --pr 77928 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Multi-line edit via gh-llm: `gh-llm pr comment-edit c3 --body-file <comment.md> --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
 
     pre_expand_calls = len(responder.calls)
     code = cli.run(["pr", "timeline-expand", "2", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
@@ -616,8 +619,14 @@ def test_view_and_expand_use_real_cursor_pagination(
         in out
     )
     assert "reply_body_file: '<reply.md>'" in out
-    assert "Multi-line reply via gh-llm: `gh-llm pr thread-reply PRRT_mock_1 --body-file <reply.md> --pr 77928 --repo PaddlePaddle/Paddle`" in out
-    assert "Multi-line edit via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body-file <comment.md> --pr 77928 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Multi-line reply via gh-llm: `gh-llm pr thread-reply PRRT_mock_1 --body-file <reply.md> --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
+    assert (
+        "Multi-line edit via gh-llm: `gh-llm pr comment-edit PRRC_self_1 --body-file <comment.md> --pr 77928 --repo PaddlePaddle/Paddle`"
+        in out
+    )
     assert "Unresolve via gh-llm:" in out
 
     code = cli.run(
@@ -919,7 +928,10 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`"
         in out
     )
-    assert "Multi-line edit via gh-llm: `gh-llm issue comment-edit ic2 --body-file <comment.md> --issue 77924 --repo PaddlePaddle/Paddle`" in out
+    assert (
+        "Multi-line edit via gh-llm: `gh-llm issue comment-edit ic2 --body-file <comment.md> --issue 77924 --repo PaddlePaddle/Paddle`"
+        in out
+    )
     assert "cross-reference by @alice (Alice)" in out
     assert "gh-llm pr view 77900 --repo PaddlePaddle/Paddle" in out
     assert "issue/closed by @ShigureNyako" in out
