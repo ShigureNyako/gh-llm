@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from gh_llm.commands.options import raise_unknown_option_value
@@ -34,6 +36,25 @@ class _ShowOptions:
     description: bool = True
     timeline: bool = True
     actions: bool = True
+
+
+def _add_body_input(parser: Any, *, required: bool, body_help: str) -> None:
+    body_group = parser.add_mutually_exclusive_group(required=required)
+    body_group.add_argument("--body", help=body_help)
+    body_group.add_argument("-F", "--body-file", help="read body text from file (use `-` to read from standard input)")
+
+
+def _read_input_file(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _resolve_body_input(args: Any) -> str:
+    body_file = getattr(args, "body_file", None)
+    if body_file:
+        return _read_input_file(str(body_file))
+    return str(getattr(args, "body", ""))
 
 
 def register_issue_parser(subparsers: Any) -> None:
@@ -86,7 +107,7 @@ def register_issue_parser(subparsers: Any) -> None:
 
     comment_edit_parser = issue_subparsers.add_parser("comment-edit", help="edit one issue comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx")
-    comment_edit_parser.add_argument("--body", required=True, help="new comment body")
+    _add_body_input(comment_edit_parser, required=True, body_help="new comment body")
     comment_edit_parser.add_argument("--issue", help="Issue number/url")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_issue_comment_edit)
@@ -230,7 +251,7 @@ def cmd_issue_comment_edit(args: Any) -> int:
         raise RuntimeError("`--issue` is required when `--repo` is provided")
     if args.issue is not None:
         client.resolve_issue(selector=args.issue, repo=args.repo)
-    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
+    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=_resolve_body_input(args))
     print(f"comment: {updated_comment_id}")
     print("status: edited")
     return 0

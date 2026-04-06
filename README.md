@@ -125,10 +125,13 @@ gh-llm issue view 77924 --repo PaddlePaddle/Paddle --show meta,description
 ```bash
 # Edit comment
 gh-llm pr comment-edit IC_xxx --body '<new_body>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr comment-edit IC_xxx --body-file comment.md --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm issue comment-edit IC_xxx --body '<new_body>' --issue 77924 --repo PaddlePaddle/Paddle
+gh-llm issue comment-edit IC_xxx --body-file comment.md --issue 77924 --repo PaddlePaddle/Paddle
 
 # Reply / resolve / unresolve review thread
 gh-llm pr thread-reply PRRT_xxx --body '<reply>' --pr 77900 --repo PaddlePaddle/Paddle
+gh-llm pr thread-reply PRRT_xxx --body-file reply.md --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr thread-resolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 gh-llm pr thread-unresolve PRRT_xxx --pr 77900 --repo PaddlePaddle/Paddle
 ```
@@ -164,6 +167,14 @@ gh-llm pr review-suggest \
   --body 'Suggested update' \
   --suggestion 'replacement_code_here' \
   --pr 77938 --repo PaddlePaddle/Paddle
+
+gh-llm pr review-suggest \
+  --path 'path/to/file' \
+  --line 123 \
+  --side RIGHT \
+  --body-file reason.md \
+  --suggestion-file replacement.txt \
+  --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
 ### 4) Submit review
@@ -178,6 +189,25 @@ gh-llm pr review-submit \
   --event REQUEST_CHANGES \
   --body-file review.md \
   --pr 77938 --repo PaddlePaddle/Paddle
+```
+
+## Multiline body safety
+
+GitHub stores body text exactly as sent. If you pass literal escape sequences such as `\n\n` inside `--body`, those backslashes may be stored literally and show up in the final review/comment.
+
+Use `--body` for short one-line text. Use `--body-file` for quotes, multiple paragraphs, bullet lists, and code fences:
+
+```bash
+cat <<'EOF' > /tmp/review.md
+> Reviewer point
+
+Fixed in `python/demo.py:42`.
+Validation: `pytest test/demo_test.py -q`
+EOF
+
+gh-llm pr thread-reply PRRT_xxx --body-file /tmp/review.md --pr 77938 --repo PaddlePaddle/Paddle
+gh-llm pr review-submit --event COMMENT --body-file /tmp/review.md --pr 77938 --repo PaddlePaddle/Paddle
+gh pr comment 77938 --repo PaddlePaddle/Paddle --body-file /tmp/review.md
 ```
 
 Submit behavior:

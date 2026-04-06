@@ -1306,6 +1306,185 @@ def test_pr_review_submit_supports_body_file_stdin(
     assert _extract_field(review_call, "body") == "stdin review body\n"
 
 
+def test_pr_thread_reply_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "reply.md"
+    body_file.write_text("> quoted point\n\nhandled in follow-up\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "thread-reply",
+            "PRRT_mock_1",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: replied" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    reply_call = next(call for call in graphql_calls if "addPullRequestReviewThreadReply" in _extract_form(call, "query"))
+    assert _extract_field(reply_call, "body") == "> quoted point\n\nhandled in follow-up\n"
+
+
+def test_pr_comment_edit_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "comment.md"
+    body_file.write_text("updated paragraph one\n\nupdated paragraph two\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "comment-edit",
+            "c3",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: edited" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    update_call = next(call for call in graphql_calls if "updateIssueComment" in _extract_form(call, "query"))
+    assert _extract_field(update_call, "body") == "updated paragraph one\n\nupdated paragraph two\n"
+
+
+def test_issue_comment_edit_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    body_file = tmp_path / "issue-comment.md"
+    body_file.write_text("issue update one\n\nissue update two\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "issue",
+            "comment-edit",
+            "c3",
+            "--body-file",
+            str(body_file),
+            "--issue",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: edited" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    update_call = next(call for call in graphql_calls if "updateIssueComment" in _extract_form(call, "query"))
+    assert _extract_field(update_call, "body") == "issue update one\n\nissue update two\n"
+
+
+def test_pr_review_comment_supports_body_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    body_file = tmp_path / "review-comment.md"
+    body_file.write_text("> reviewer point\n\nplease simplify this branch\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "review-comment",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            str(body_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: commented" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert _extract_field(review_call, "body") == "> reviewer point\n\nplease simplify this branch\n"
+
+
+def test_pr_review_suggest_supports_file_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    body_file = tmp_path / "suggest-reason.md"
+    body_file.write_text("Please apply this exact replacement.\n\nIt preserves behavior.\n", encoding="utf-8")
+    suggestion_file = tmp_path / "replacement.txt"
+    suggestion_file.write_text("new_api_call()\ncleanup()\n", encoding="utf-8")
+
+    code = cli.run(
+        [
+            "pr",
+            "review-suggest",
+            "--path",
+            "python/test_file.py",
+            "--line",
+            "20",
+            "--side",
+            "RIGHT",
+            "--body-file",
+            str(body_file),
+            "--suggestion-file",
+            str(suggestion_file),
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+        ]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "status: suggested" in out
+    graphql_calls = [call for call in responder.calls if call[:3] == ["gh", "api", "graphql"]]
+    review_call = next(call for call in graphql_calls if "addPullRequestReviewThread" in _extract_form(call, "query"))
+    assert (
+        _extract_field(review_call, "body")
+        == "Please apply this exact replacement.\n\nIt preserves behavior.\n\n```suggestion\nnew_api_call()\ncleanup()\n```"
+    )
+
+
 def _extract_form(cmd: list[str], key: str) -> str:
     for idx, token in enumerate(cmd):
         if token == "-f" and idx + 1 < len(cmd):

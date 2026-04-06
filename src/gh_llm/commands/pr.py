@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from gh_llm.models import PullRequestMeta, TimelineContext, TimelinePage
 
 DEFAULT_DIFF_HUNK_LINES = 12
+BODY_FILE_HELP = "read body text from file (use `-` to read from standard input)"
+SUGGESTION_FILE_HELP = "read replacement content from file (use `-` to read from standard input)"
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,24 @@ class _ShowOptions:
     checks: bool = True
     actions: bool = True
     mergeability: bool = True
+
+
+def _add_body_input(
+    parser: Any,
+    *,
+    required: bool,
+    body_help: str,
+    default: str | None = None,
+) -> None:
+    body_group = parser.add_mutually_exclusive_group(required=required)
+    body_group.add_argument("--body", default=default, help=body_help)
+    body_group.add_argument("-F", "--body-file", help=BODY_FILE_HELP)
+
+
+def _add_suggestion_input(parser: Any) -> None:
+    suggestion_group = parser.add_mutually_exclusive_group(required=True)
+    suggestion_group.add_argument("--suggestion", help="replacement content inserted inside ```suggestion block")
+    suggestion_group.add_argument("--suggestion-file", help=SUGGESTION_FILE_HELP)
 
 
 def register_pr_parser(subparsers: Any) -> None:
@@ -160,7 +180,7 @@ def register_pr_parser(subparsers: Any) -> None:
 
     thread_reply_parser = pr_subparsers.add_parser("thread-reply", help="reply to a pull request review thread")
     thread_reply_parser.add_argument("thread_id", help="review thread id, e.g. PRRT_xxx")
-    thread_reply_parser.add_argument("--body", required=True, help="reply body")
+    _add_body_input(thread_reply_parser, required=True, body_help="reply body")
     thread_reply_parser.add_argument("--pr", help="PR number/url/branch")
     thread_reply_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     thread_reply_parser.set_defaults(handler=cmd_pr_thread_reply)
@@ -183,7 +203,7 @@ def register_pr_parser(subparsers: Any) -> None:
 
     comment_edit_parser = pr_subparsers.add_parser("comment-edit", help="edit one issue/review comment by node id")
     comment_edit_parser.add_argument("comment_id", help="comment id, e.g. IC_xxx or PRRC_xxx")
-    comment_edit_parser.add_argument("--body", required=True, help="new comment body")
+    _add_body_input(comment_edit_parser, required=True, body_help="new comment body")
     comment_edit_parser.add_argument("--pr", help="PR number/url/branch")
     comment_edit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     comment_edit_parser.set_defaults(handler=cmd_pr_comment_edit)
@@ -217,7 +237,7 @@ def register_pr_parser(subparsers: Any) -> None:
         choices=["RIGHT", "LEFT"],
         help="starting diff side for a multi-line range (defaults to --side)",
     )
-    review_comment_parser.add_argument("--body", required=True, help="review comment body")
+    _add_body_input(review_comment_parser, required=True, body_help="review comment body")
     review_comment_parser.add_argument("--pr", help="PR number/url/branch")
     review_comment_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_comment_parser.set_defaults(handler=cmd_pr_review_comment)
@@ -228,16 +248,13 @@ def register_pr_parser(subparsers: Any) -> None:
     review_suggest_parser.add_argument("--path", required=True, help="file path in pull request")
     review_suggest_parser.add_argument("--line", required=True, type=int, help="line number on selected side")
     review_suggest_parser.add_argument("--side", choices=["RIGHT", "LEFT"], default="RIGHT", help="diff side")
-    review_suggest_parser.add_argument(
-        "--body",
+    _add_body_input(
+        review_suggest_parser,
+        required=False,
+        body_help="review comment body before suggestion block",
         default="Suggested change",
-        help="review comment body before suggestion block",
     )
-    review_suggest_parser.add_argument(
-        "--suggestion",
-        required=True,
-        help="replacement content inserted inside ```suggestion block",
-    )
+    _add_suggestion_input(review_suggest_parser)
     review_suggest_parser.add_argument("--pr", help="PR number/url/branch")
     review_suggest_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_suggest_parser.set_defaults(handler=cmd_pr_review_suggest)
@@ -251,29 +268,32 @@ def register_pr_parser(subparsers: Any) -> None:
         default="COMMENT",
         help="review event type",
     )
-    review_submit_body_group = review_submit_parser.add_mutually_exclusive_group()
-    review_submit_body_group.add_argument("--body", default="", help="review summary body")
-    review_submit_body_group.add_argument(
-        "-F",
-        "--body-file",
-        help="read review summary body from file (use `-` to read from standard input)",
-    )
+    _add_body_input(review_submit_parser, required=False, body_help="review summary body", default="")
     review_submit_parser.add_argument("--pr", help="PR number/url/branch")
     review_submit_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     review_submit_parser.set_defaults(handler=cmd_pr_review_submit)
 
 
-def _read_body_file(path: str) -> str:
+def _read_input_file(path: str) -> str:
     if path == "-":
         return sys.stdin.read()
     return Path(path).read_text(encoding="utf-8")
 
 
-def _resolve_review_submit_body(args: Any) -> str:
-    body_file = getattr(args, "body_file", None)
-    if body_file:
-        return _read_body_file(str(body_file))
-    return str(getattr(args, "body", ""))
+def _resolve_text_input(
+    args: Any,
+    *,
+    value_attr: str,
+    file_attr: str,
+    default: str = "",
+) -> str:
+    value_file = getattr(args, file_attr, None)
+    if value_file:
+        return _read_input_file(str(value_file))
+    value = getattr(args, value_attr, None)
+    if value is None:
+        return default
+    return str(value)
 
 
 def cmd_pr_view(args: Any) -> int:
@@ -560,7 +580,10 @@ def cmd_pr_thread_reply(args: Any) -> int:
     if args.pr is not None:
         client.resolve_pull_request(selector=args.pr, repo=args.repo)
 
-    comment_id = client.reply_review_thread(thread_id=str(args.thread_id), body=str(args.body))
+    comment_id = client.reply_review_thread(
+        thread_id=str(args.thread_id),
+        body=_resolve_text_input(args, value_attr="body", file_attr="body_file"),
+    )
     print(f"thread: {args.thread_id}")
     if comment_id:
         print(f"reply_comment_id: {comment_id}")
@@ -600,7 +623,10 @@ def cmd_pr_comment_edit(args: Any) -> int:
         raise RuntimeError("`--pr` is required when `--repo` is provided")
     if args.pr is not None:
         client.resolve_pull_request(selector=args.pr, repo=args.repo)
-    updated_comment_id = client.edit_comment(comment_id=str(args.comment_id), body=str(args.body))
+    updated_comment_id = client.edit_comment(
+        comment_id=str(args.comment_id),
+        body=_resolve_text_input(args, value_attr="body", file_attr="body_file"),
+    )
     print(f"comment: {updated_comment_id}")
     print("status: edited")
     return 0
@@ -635,15 +661,27 @@ def cmd_pr_review_start(args: Any) -> int:
     comment_template_cmd = display_command_with(
         f"pr review-comment --path '<path>' --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
     )
+    comment_file_template_cmd = display_command_with(
+        f"pr review-comment --path '<path>' --line <line> --side RIGHT --body-file <review_comment.md> --pr {meta.ref.number} --repo {repo}"
+    )
     suggestion_template_cmd = display_command_with(
         f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body '<reason>' --suggestion '<replacement>' --pr {meta.ref.number} --repo {repo}"
+    )
+    suggestion_file_template_cmd = display_command_with(
+        f"pr review-suggest --path '<path>' --line <line> --side RIGHT --body-file <reason.md> --suggestion-file <replacement.txt> --pr {meta.ref.number} --repo {repo}"
     )
     range_template_cmd = display_command_with(
         f"pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body '<review_comment>' --pr {meta.ref.number} --repo {repo}"
     )
+    range_file_template_cmd = display_command_with(
+        f"pr review-comment --path '<path>' --start-line <start_line> --line <line> --side RIGHT --body-file <review_comment.md> --pr {meta.ref.number} --repo {repo}"
+    )
     print(f"Comment template: `{comment_template_cmd}`")
+    print(f"Comment file template: `{comment_file_template_cmd}`")
     print(f"Suggestion template: `{suggestion_template_cmd}`")
+    print(f"Suggestion file template: `{suggestion_file_template_cmd}`")
     print(f"Multi-line template: `{range_template_cmd}`")
+    print(f"Multi-line file template: `{range_file_template_cmd}`")
     print()
 
     if not visible:
@@ -692,7 +730,7 @@ def cmd_pr_review_comment(args: Any) -> int:
         side=str(args.side),
         start_line=start_line,
         start_side=start_side,
-        body=str(args.body),
+        body=_resolve_text_input(args, value_attr="body", file_attr="body_file"),
     )
     print(f"thread: {thread_id}")
     if comment_id:
@@ -715,8 +753,9 @@ def cmd_pr_review_suggest(args: Any) -> int:
         start_line=start_line,
         start_side=start_side,
     )
-    suggestion = str(args.suggestion).rstrip("\n")
-    full_body = f"{str(args.body).rstrip()}\n\n```suggestion\n{suggestion}\n```"
+    suggestion = _resolve_text_input(args, value_attr="suggestion", file_attr="suggestion_file").rstrip("\n")
+    body = _resolve_text_input(args, value_attr="body", file_attr="body_file", default="Suggested change")
+    full_body = f"{body.rstrip()}\n\n```suggestion\n{suggestion}\n```"
     thread_id, comment_id = client.add_pull_request_review_thread_comment(
         ref=meta.ref,
         path=str(args.path),
@@ -736,7 +775,7 @@ def cmd_pr_review_suggest(args: Any) -> int:
 def cmd_pr_review_submit(args: Any) -> int:
     client = GitHubClient()
     meta = _resolve_pr_meta(client=client, args=args)
-    body = _resolve_review_submit_body(args)
+    body = _resolve_text_input(args, value_attr="body", file_attr="body_file")
     review_id, review_state = client.submit_pull_request_review(
         ref=meta.ref,
         event=str(args.event),

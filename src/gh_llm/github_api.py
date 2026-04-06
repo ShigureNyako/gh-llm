@@ -2162,7 +2162,12 @@ def _render_review_thread_block(
     resolve_cmd = display_command_with(f"pr thread-resolve {thread_id} --pr {ref.number} --repo {ref.owner}/{ref.name}")
     lines.append(f"  ◌ thread_id: {thread_id}")
     lines.append("  ⌨ reply_body: '<reply>'")
+    lines.append("  ⌨ reply_body_file: '<reply.md>'")
     lines.append(f"  ⏎ Reply via {display_command()}: `{reply_cmd}`")
+    lines.append(
+        "  ⏎ Multi-line reply via "
+        + f"{display_command()}: `{display_command_with(f'pr thread-reply {thread_id} --body-file <reply.md> --pr {ref.number} --repo {ref.owner}/{ref.name}')}`"
+    )
     if is_resolved:
         lines.append(f"  ⏎ Unresolve via {display_command()}: `{unresolve_cmd}`")
     else:
