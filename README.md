@@ -191,6 +191,12 @@ gh-llm pr review-submit \
   --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
+Pick the strongest explicit review outcome the evidence supports:
+
+- `APPROVE`: ready to merge from your side
+- `REQUEST_CHANGES`: blocking issues remain
+- `COMMENT`: non-blocking notes or intermediate status only
+
 ## Multiline body safety
 
 GitHub stores body text exactly as sent. If you pass literal escape sequences such as `\n\n` inside `--body`, those backslashes may be stored literally and show up in the final review/comment.

@@ -201,6 +201,16 @@ Do not hand-escape markdown structure inside a shell string unless the content i
 6. Use `review-suggest` when you can propose a small exact replacement at one location; use `review-comment` when the change is broader, uncertain, or needs discussion first.
 7. After posting inline feedback, report the returned `thread` / `comment` ids as the operation result.
 
+### Review conclusion
+
+The review outcome should be explicit whenever the current state is already clear.
+
+1. Use `APPROVE` when the change is ready to merge from your side.
+2. Use `REQUEST_CHANGES` when blocking issues remain.
+3. Use `COMMENT` mainly for non-blocking notes, partial context gathering, or intermediate status updates before the final conclusion is clear.
+4. Do not leave the review state implicit if your evidence already supports approval or blocking.
+5. In the review body, state the conclusion in plain language as well, especially when using `REQUEST_CHANGES`.
+
 ### As PR author
 
 1. Expand and read all relevant review content.
