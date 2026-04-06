@@ -268,9 +268,34 @@ gh-llm pr review-submit \
   --pr 77938 --repo PaddlePaddle/Paddle
 ```
 
+Pick the strongest explicit review outcome the evidence supports:
+
+- `APPROVE`: ready to merge from your side
+- `REQUEST_CHANGES`: blocking issues remain
+- `COMMENT`: non-blocking notes or intermediate status only
+
 `pr comment-edit`, `issue comment-edit`, `thread-reply`, `review-comment`, `review-suggest`, and `review-submit` all support `--body-file -` to read multi-line text from standard input. `review-suggest` also supports `--suggestion-file -` for the suggestion block itself.
 
 > Note: `review-suggest --body-file - --suggestion-file -` is intentionally rejected because standard input can only be consumed once. Use separate files when both the reason text and suggestion block need external input.
+
+## Multiline body safety
+
+GitHub stores body text exactly as sent. If you pass literal escape sequences such as `\n\n` inside `--body`, those backslashes may be stored literally and show up in the final review/comment.
+
+Use `--body` for short one-line text. Use `--body-file` for quotes, multiple paragraphs, bullet lists, and code fences:
+
+```bash
+cat <<'EOF' > /tmp/review.md
+> Reviewer point
+
+Fixed in `python/demo.py:42`.
+Validation: `pytest test/demo_test.py -q`
+EOF
+
+gh-llm pr thread-reply PRRT_xxx --body-file /tmp/review.md --pr 77938 --repo PaddlePaddle/Paddle
+gh-llm pr review-submit --event COMMENT --body-file /tmp/review.md --pr 77938 --repo PaddlePaddle/Paddle
+gh pr comment 77938 --repo PaddlePaddle/Paddle --body-file /tmp/review.md
+```
 
 Submit behavior:
 

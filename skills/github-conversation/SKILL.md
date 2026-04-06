@@ -22,6 +22,40 @@ metadata:
 2. Use `gh` for simple write actions (comment, labels, assignees, reviewers, close/reopen, merge).
 3. If context is incomplete, do not reply yet; expand first.
 
+## Message body fidelity
+
+GitHub stores the body text exactly as sent.
+
+1. Do not write multi-paragraph bodies as literal escape sequences such as `\n` or `\n\n`.
+2. If you send `--body 'line1\n\nline2'`, GitHub may store the backslashes literally, and the rendered review/comment will show `\n\n`.
+3. Use `--body` only for short single-paragraph text.
+4. For quotes, bullets, code fences, or multiple paragraphs, prefer `--body-file` with a file or `-` on standard input.
+5. For review suggestions that span multiple lines, prefer `--suggestion-file`.
+
+Safe patterns:
+
+```bash
+cat <<'EOF' > /tmp/reply.md
+> Reviewer point
+
+Fixed in `python/demo.py:42`.
+Validation: `pytest test/demo_test.py -q`
+EOF
+
+gh-llm pr thread-reply PRRT_xxx --body-file /tmp/reply.md --pr <pr> --repo <owner/repo>
+gh-llm pr review-submit --event COMMENT --body-file /tmp/reply.md --pr <pr> --repo <owner/repo>
+gh pr comment <pr> --repo <owner/repo> --body-file /tmp/reply.md
+```
+
+```bash
+cat <<'EOF' | gh-llm pr review-submit --event COMMENT --body-file - --pr <pr> --repo <owner/repo>
+Round-up:
+
+- fixed overload selection
+- added regression coverage
+EOF
+```
+
 ## Install gh-llm
 
 Prerequisites:
@@ -145,6 +179,7 @@ For PRs, check:
 
 A single reply should answer the target point only.
 Do not mix unrelated updates.
+For multi-paragraph replies, use `--body-file` instead of embedding `\n\n` inside `--body`.
 
 ### 2) Be verifiable
 
@@ -154,6 +189,16 @@ When making technical claims, include at least one concrete reference:
 2. commit hash
 3. check/log link
 4. reproduction command
+
+### 2.5) Distinguish observed facts from intended actions
+
+Only treat a GitHub write action as completed after the command returns a success status or object id.
+
+1. Do not say "I already left an inline comment" unless the command output confirms it.
+2. For `review-comment`, wait for `status: commented` and record the returned `thread` / `comment` id.
+3. For `review-suggest`, wait for `status: suggested` and record the returned `thread` / `comment` id.
+4. For `thread-reply`, wait for `status: replied` and record the returned `thread` / `reply_comment_id`.
+5. If a write command was only drafted, described, or planned, say so explicitly instead of implying it already happened.
 
 ### 3) Quote only when needed
 
@@ -175,6 +220,11 @@ Use plain status language:
 4. intentionally unchanged
 
 If partially fixed or unchanged, include reason and next step.
+
+### 5) Preserve quoting and paragraph breaks
+
+When you need `>` quotes, bullets, numbered lists, or fenced code blocks, write the body through `--body-file`.
+Do not hand-escape markdown structure inside a shell string unless the content is genuinely one line.
 
 ## Review workflow
 
@@ -243,6 +293,16 @@ gh-llm pr review-submit --event REQUEST_CHANGES --body '<summary>' --pr <pr> --r
 gh-llm pr review-submit --event APPROVE --body '<summary>' --pr <pr> --repo <owner/repo>
 ```
 
+### Review conclusion
+
+The review outcome should be explicit whenever the current state is already clear.
+
+1. Use `APPROVE` when the change is ready to merge from your side.
+2. Use `REQUEST_CHANGES` when blocking issues remain.
+3. Use `COMMENT` mainly for non-blocking notes, partial context gathering, or intermediate status updates before the final conclusion is clear.
+4. Do not leave the review state implicit if your evidence already supports approval or blocking.
+5. In the review body, state the conclusion in plain language as well, especially when using `REQUEST_CHANGES`.
+
 Use the final review summary to group the round:
 
 1. what is blocking
@@ -267,6 +327,22 @@ gh-llm pr thread-expand <PRRT_id> --pr <pr> --repo <owner/repo>
 4. Resolve a thread only after the fix or decision is actually complete.
 5. If a reviewer's suggestion is substantially adopted, add proper co-author credit in the follow-up commit.
 6. After a batch of fixes, post one concise round-up so the reviewer can re-check efficiently.
+
+### Inline feedback choice
+
+Prefer the smallest tool that matches the intent:
+
+1. `thread-reply`: respond inside an existing review thread.
+2. `review-comment`: raise a new inline point without an exact replacement.
+3. `review-suggest`: propose a concrete patch the author can apply directly.
+
+Use `review-suggest` by default when all of the following are true:
+
+1. the change is local to one hunk
+2. the replacement text is known exactly
+3. the explanation fits in one short rationale paragraph
+
+Do not force `review-suggest` when the fix spans multiple files, requires design discussion, or depends on behavior you have not verified.
 
 ## Issue workflow
 
