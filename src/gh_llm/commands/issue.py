@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING, Any
 
 from gh_llm.commands.options import (
     add_body_input_arguments,
+    add_timeline_window_arguments,
     maybe_resolve_subject,
+    parse_timeline_window,
     raise_unknown_option_value,
     resolve_file_or_inline_text,
     resolve_subject,
@@ -65,6 +67,7 @@ def register_issue_parser(subparsers: Any) -> None:
         default=[],
         help="auto-expand folded content: minimized, details, all (comma-separated or repeatable)",
     )
+    add_timeline_window_arguments(view_parser)
     view_parser.set_defaults(handler=cmd_issue_view)
 
     timeline_expand_parser = issue_subparsers.add_parser("timeline-expand", help="load one timeline page by number")
@@ -78,6 +81,7 @@ def register_issue_parser(subparsers: Any) -> None:
         default=[],
         help="auto-expand folded content: minimized, details, all (comma-separated or repeatable)",
     )
+    add_timeline_window_arguments(timeline_expand_parser)
     timeline_expand_parser.set_defaults(handler=cmd_issue_timeline_expand)
 
     details_expand_parser = issue_subparsers.add_parser(
@@ -88,6 +92,7 @@ def register_issue_parser(subparsers: Any) -> None:
     details_expand_parser.add_argument("--issue", help="Issue number/url")
     details_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     details_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    add_timeline_window_arguments(details_expand_parser)
     details_expand_parser.set_defaults(handler=cmd_issue_details_expand)
 
     comment_edit_parser = issue_subparsers.add_parser("comment-edit", help="edit one issue comment by node id")
@@ -113,6 +118,7 @@ def cmd_issue_view(args: Any) -> int:
     page_size = int(args.page_size)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
     show = _parse_show_options(raw_values=list(getattr(args, "show", [])))
+    timeline_window = _resolve_timeline_window(args)
     client = GitHubClient()
     pager = TimelinePager(client)
 
@@ -126,6 +132,7 @@ def cmd_issue_view(args: Any) -> int:
         context, first_page, last_page = pager.build_initial(
             meta,
             page_size=page_size,
+            timeline_window=timeline_window,
             show_minimized_details=expand.minimized,
             show_details_blocks=expand.details,
         )
@@ -194,8 +201,14 @@ def cmd_issue_view(args: Any) -> int:
 def cmd_issue_timeline_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
+    context, meta = _resolve_context_and_meta(
+        client=client,
+        pager=pager,
+        args=args,
+        show_minimized_details=expand.minimized,
+        show_details_blocks=expand.details,
+    )
 
     page = pager.fetch_page(
         meta=meta,
@@ -217,13 +230,19 @@ def cmd_issue_timeline_expand(args: Any) -> int:
 def cmd_issue_details_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+    context, meta = _resolve_context_and_meta(
+        client=client,
+        pager=pager,
+        args=args,
+        show_minimized_details=True,
+        show_details_blocks=True,
+    )
 
     index = int(args.index)
-    if index < 1 or index > context.total_count:
+    page_number = _resolve_timeline_page_for_index(context=context, index=index)
+    if page_number is None:
         raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
 
-    page_number = ((index - 1) // context.page_size) + 1
     page = pager.fetch_page(
         meta=meta,
         context=context,
@@ -232,10 +251,12 @@ def cmd_issue_details_expand(args: Any) -> int:
         show_details_blocks=True,
         diff_hunk_lines=None,
     )
-    page_start = (page_number - 1) * context.page_size + 1
-    offset = index - page_start
-    if offset < 0 or offset >= len(page.items):
-        raise RuntimeError("event index is outside loaded page range")
+    try:
+        offset = page.absolute_indexes.index(index)
+    except ValueError:
+        raise RuntimeError("event index is outside loaded page range") from None
+    except AttributeError as error:  # pragma: no cover - defensive fallback
+        raise RuntimeError("event index is outside loaded page range") from error
 
     for line in render_event_detail_blocks(index=index, event=page.items[offset]):
         print(line)
@@ -282,13 +303,39 @@ def _resolve_optional_issue(*, client: GitHubClient, args: Any) -> PullRequestMe
 
 
 def _resolve_context_and_meta(
-    *, client: GitHubClient, pager: TimelinePager, args: Any
+    *,
+    client: GitHubClient,
+    pager: TimelinePager,
+    args: Any,
+    show_minimized_details: bool = False,
+    show_details_blocks: bool = False,
 ) -> tuple[TimelineContext, PullRequestMeta]:
     page_size = getattr(args, "page_size", None)
     effective_page_size = DEFAULT_PAGE_SIZE if page_size is None else int(page_size)
     meta = _resolve_issue_meta(client=client, args=args)
-    context, _, _ = pager.build_initial(meta=meta, page_size=effective_page_size)
+    context, _, _ = pager.build_initial(
+        meta=meta,
+        page_size=effective_page_size,
+        timeline_window=_resolve_timeline_window(args),
+        show_minimized_details=show_minimized_details,
+        show_details_blocks=show_details_blocks,
+    )
     return context, meta
+
+
+def _resolve_timeline_window(args: Any):
+    return parse_timeline_window(after=getattr(args, "after", None), before=getattr(args, "before", None))
+
+
+def _resolve_timeline_page_for_index(*, context: TimelineContext, index: int) -> int | None:
+    if context.timeline_filtered:
+        for page_number, page in context.filtered_pages.items():
+            if index in page.absolute_indexes:
+                return page_number
+        return None
+    if index < 1 or index > context.total_count:
+        return None
+    return ((index - 1) // context.page_size) + 1
 
 
 def _parse_expand_options(*, raw_values: list[str]) -> _ExpandOptions:

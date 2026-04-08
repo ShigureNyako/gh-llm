@@ -740,6 +740,183 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "END_MARKER" in out
 
 
+def test_pr_view_after_filters_incremental_events_and_avoids_forward_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "pr",
+            "view",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--after",
+            "2026-02-14T14:44:36Z",
+        ]
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "fetched_at: " in out
+    assert "timeline_after: 2026-02-14T14:44:36Z" in out
+    assert "timeline_events: 3" in out
+    assert "timeline_events_unfiltered: 7" in out
+    assert "### Page 1/2" in out
+    assert "### Page 2/2" in out
+    assert "5. [2026-02-14 14:51 UTC] review/approved by @reviewer" in out
+    assert "7. [2026-02-14 15:11 UTC] comment by @ShigureNyako" in out
+    assert "commit 2" not in out
+    assert "comment 2" not in out
+
+    timeline_queries = [
+        _extract_form(call, "query")
+        for call in responder.calls
+        if call[:3] == ["gh", "api", "graphql"] and "timelineItems(" in _extract_form(call, "query")
+    ]
+    assert any("timelineItems(last:" in query for query in timeline_queries)
+    assert not any("timelineItems(first:" in query for query in timeline_queries)
+
+
+def test_issue_view_before_filters_older_events(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "issue",
+            "view",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--before",
+            "2026-02-13T13:30:00Z",
+        ]
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "timeline_before: 2026-02-13T13:30:00Z" in out
+    assert "timeline_events: 3" in out
+    assert "timeline_events_unfiltered: 5" in out
+    assert "### Page 1/2" in out
+    assert "### Page 2/2" in out
+    assert "3. [2026-02-13 13:00 UTC] comment by @ShigureNyako" in out
+    assert "issue/closed by @ShigureNyako" not in out
+    assert "issue/marked-as-duplicate" not in out
+
+    timeline_queries = [
+        _extract_form(call, "query")
+        for call in responder.calls
+        if call[:3] == ["gh", "api", "graphql"] and "timelineItems(" in _extract_form(call, "query")
+    ]
+    assert any("timelineItems(first:" in query for query in timeline_queries)
+    assert not any("timelineItems(last:" in query for query in timeline_queries)
+
+
+def test_pr_timeline_expand_with_after_uses_filtered_page_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "pr",
+            "timeline-expand",
+            "2",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--after",
+            "2026-02-14T14:44:36Z",
+        ]
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "timeline_after: 2026-02-14T14:44:36Z" in out
+    assert "### Page 2/2" in out
+    assert "7. [2026-02-14 15:11 UTC] comment by @ShigureNyako" in out
+    assert "review/APPROVED by @reviewer" not in out
+    assert "comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle" in out
+
+
+def test_pr_timeline_expand_with_after_and_expand_option(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "pr",
+            "timeline-expand",
+            "1",
+            "--pr",
+            "77928",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--after",
+            "2026-02-14T14:44:36Z",
+            "--expand",
+            "resolved,minimized",
+        ]
+    )
+    assert code == 0
+
+    out = capsys.readouterr().out
+    assert "timeline_after: 2026-02-14T14:44:36Z" in out
+    assert "### Page 1/2" in out
+    assert "Review comments (3/3 shown):" in out
+    assert "PRRT_mock_1" in out
+    assert "PRRT_mock_2" in out
+    assert "(review hidden: outdated)" not in out
+    assert "resolved review comments are collapsed" not in out
+    assert "hidden review comments are collapsed" not in out
+
+
+def test_invalid_timeline_window_range_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responder = GhResponder()
+    monkeypatch.setattr(github_api.subprocess, "run", responder.run)
+
+    code = cli.run(
+        [
+            "issue",
+            "view",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--after",
+            "2026-02-13T14:10:00Z",
+            "--before",
+            "2026-02-13T14:10:00Z",
+        ]
+    )
+    assert code == 1
+
+    err = capsys.readouterr().err
+    assert "error: invalid time range: `--after` must be earlier than `--before`" in err
+    assert responder.calls == []
+
+
 def test_pr_view_show_meta_skips_timeline_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -3706,6 +3883,108 @@ def test_issue_timeline_expand_with_expand_minimized(
     assert code == 0
     out = capsys.readouterr().out
     assert "(comment hidden: outdated)" not in out
+
+
+def test_issue_timeline_expand_with_before_and_expand_minimized(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+
+    code = cli.run(
+        [
+            "issue",
+            "timeline-expand",
+            "1",
+            "--issue",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--before",
+            "2026-02-13T13:30:00Z",
+            "--expand",
+            "minimized",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "timeline_before: 2026-02-13T13:30:00Z" in out
+    assert "### Page 1/2" in out
+    assert "(comment hidden: outdated)" not in out
+    assert "cross-reference by @alice (Alice)" in out
+
+
+def test_issue_details_expand_with_before_uses_filtered_expanded_page(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def issue_events_with_details() -> list[dict[str, Any]]:
+        return [
+            {
+                "__typename": "IssueComment",
+                "id": "ic0",
+                "url": "https://example.com/ic0",
+                "createdAt": "2026-02-13T10:00:00Z",
+                "body": "older issue comment",
+                "isMinimized": False,
+                "minimizedReason": None,
+                "author": {"login": "alice"},
+                "reactionGroups": [],
+            },
+            {
+                "__typename": "IssueComment",
+                "id": "ic_details",
+                "url": "https://example.com/ic-details",
+                "createdAt": "2026-02-13T11:00:00Z",
+                "body": "intro\n<details><summary>why</summary>\nfiltered details body\n</details>",
+                "isMinimized": True,
+                "minimizedReason": "OUTDATED",
+                "author": {"login": "bot"},
+                "reactionGroups": [],
+            },
+            {
+                "__typename": "IssueComment",
+                "id": "ic2",
+                "url": "https://example.com/ic2",
+                "createdAt": "2026-02-13T13:00:00Z",
+                "body": "later issue comment",
+                "isMinimized": False,
+                "minimizedReason": None,
+                "author": {"login": "ShigureNyako"},
+                "reactionGroups": [],
+            },
+            {
+                "__typename": "ClosedEvent",
+                "id": "iclose1",
+                "createdAt": "2026-02-13T14:00:00Z",
+                "actor": {"login": "ShigureNyako"},
+            },
+        ]
+
+    monkeypatch.setattr(github_api.subprocess, "run", GhResponder().run)
+    monkeypatch.setattr(sys.modules[__name__], "_issue_events", issue_events_with_details)
+
+    code = cli.run(
+        [
+            "issue",
+            "details-expand",
+            "2",
+            "--issue",
+            "77924",
+            "--repo",
+            "PaddlePaddle/Paddle",
+            "--page-size",
+            "2",
+            "--before",
+            "2026-02-13T13:30:00Z",
+        ]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "## Details Blocks for Event 2" in out
+    assert "<summary>why</summary>" in out
+    assert "filtered details body" in out
+    assert "(details body collapsed)" not in out
 
 
 def test_pr_view_show_timeline_only(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

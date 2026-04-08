@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 from gh_llm.commands.options import (
     add_body_input_arguments,
+    add_timeline_window_arguments,
     maybe_resolve_subject,
+    parse_timeline_window,
     raise_unknown_option_value,
     resolve_file_or_inline_text,
     resolve_subject,
@@ -96,6 +98,7 @@ def register_pr_parser(subparsers: Any) -> None:
         default=DEFAULT_DIFF_HUNK_LINES,
         help="max lines for each review diff hunk (<=0 means full)",
     )
+    add_timeline_window_arguments(view_parser)
     view_parser.set_defaults(handler=cmd_pr_view)
 
     timeline_expand_parser = pr_subparsers.add_parser("timeline-expand", help="expand a specific timeline page")
@@ -115,6 +118,7 @@ def register_pr_parser(subparsers: Any) -> None:
         default=DEFAULT_DIFF_HUNK_LINES,
         help="max lines for each review diff hunk (<=0 means full)",
     )
+    add_timeline_window_arguments(timeline_expand_parser)
     timeline_expand_parser.set_defaults(handler=cmd_pr_timeline_expand)
 
     details_expand_parser = pr_subparsers.add_parser(
@@ -125,6 +129,7 @@ def register_pr_parser(subparsers: Any) -> None:
     details_expand_parser.add_argument("--pr", help="PR number/url/branch")
     details_expand_parser.add_argument("--repo", help="repository in OWNER/REPO format")
     details_expand_parser.add_argument("--page-size", type=int, help="timeline entries per page")
+    add_timeline_window_arguments(details_expand_parser)
     details_expand_parser.set_defaults(handler=cmd_pr_details_expand)
 
     review_expand_parser = pr_subparsers.add_parser(
@@ -376,6 +381,7 @@ def cmd_pr_view(args: Any) -> int:
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
     show = _parse_show_options(raw_values=list(getattr(args, "show", [])))
+    timeline_window = _resolve_timeline_window(args)
     client = GitHubClient()
     pager = TimelinePager(client)
 
@@ -389,6 +395,7 @@ def cmd_pr_view(args: Any) -> int:
         context, first_page, last_page = pager.build_initial(
             meta,
             page_size=page_size,
+            timeline_window=timeline_window,
             show_resolved_details=expand.resolved,
             show_outdated_details=True,
             show_minimized_details=expand.minimized,
@@ -483,9 +490,18 @@ def cmd_pr_view(args: Any) -> int:
 def cmd_pr_timeline_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
     diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     expand = _parse_expand_options(raw_values=list(getattr(args, "expand", [])))
+    context, meta = _resolve_context_and_meta(
+        client=client,
+        pager=pager,
+        args=args,
+        show_resolved_details=expand.resolved,
+        show_outdated_details=True,
+        show_minimized_details=expand.minimized,
+        show_details_blocks=expand.details,
+        diff_hunk_lines=diff_hunk_lines,
+    )
 
     page = pager.fetch_page(
         meta=meta,
@@ -510,13 +526,22 @@ def cmd_pr_timeline_expand(args: Any) -> int:
 def cmd_pr_details_expand(args: Any) -> int:
     client = GitHubClient()
     pager = TimelinePager(client)
-    context, meta = _resolve_context_and_meta(client=client, pager=pager, args=args)
+    context, meta = _resolve_context_and_meta(
+        client=client,
+        pager=pager,
+        args=args,
+        show_resolved_details=True,
+        show_outdated_details=True,
+        show_minimized_details=True,
+        show_details_blocks=True,
+        diff_hunk_lines=None,
+    )
 
     index = int(args.index)
-    if index < 1 or index > context.total_count:
+    page_number = _resolve_timeline_page_for_index(context=context, index=index)
+    if page_number is None:
         raise RuntimeError(f"invalid event index {index}, expected in 1..{context.total_count}")
 
-    page_number = ((index - 1) // context.page_size) + 1
     page = pager.fetch_page(
         meta=meta,
         context=context,
@@ -527,11 +552,10 @@ def cmd_pr_details_expand(args: Any) -> int:
         show_details_blocks=True,
         diff_hunk_lines=None,
     )
-
-    page_start = (page_number - 1) * context.page_size + 1
-    offset = index - page_start
-    if offset < 0 or offset >= len(page.items):
-        raise RuntimeError("event index is outside loaded page range")
+    try:
+        offset = page.absolute_indexes.index(index)
+    except ValueError:
+        raise RuntimeError("event index is outside loaded page range") from None
 
     for line in render_event_detail_blocks(index=index, event=page.items[offset]):
         print(line)
@@ -584,7 +608,7 @@ def cmd_pr_review_expand(args: Any) -> int:
             if not event.kind.startswith("review/"):
                 continue
             if event.source_id in review_ids:
-                event_index = ((page_number - 1) * context.page_size) + offset + 1
+                event_index = page.absolute_indexes[offset]
                 matched[event.source_id] = (event_index, page)
         if len(matched) == len(review_ids):
             break
@@ -598,8 +622,13 @@ def cmd_pr_review_expand(args: Any) -> int:
             continue
 
         event_index, page = item
-        page_start = (event_index - 1) // context.page_size * context.page_size + 1
-        offset = event_index - page_start
+        try:
+            offset = page.absolute_indexes.index(event_index)
+        except ValueError:
+            print(f"## Review {review_id}")
+            print("(not found on this PR timeline)")
+            print()
+            continue
         event = page.items[offset]
         for line in render_event_detail(index=event_index, event=event):
             print(line)
@@ -1125,18 +1154,45 @@ def cmd_pr_review_submit(args: Any) -> int:
 
 
 def _resolve_context_and_meta(
-    *, client: GitHubClient, pager: TimelinePager, args: Any
+    *,
+    client: GitHubClient,
+    pager: TimelinePager,
+    args: Any,
+    show_resolved_details: bool = False,
+    show_outdated_details: bool = False,
+    show_minimized_details: bool = False,
+    show_details_blocks: bool = False,
+    diff_hunk_lines: int | None = DEFAULT_DIFF_HUNK_LINES,
 ) -> tuple[TimelineContext, PullRequestMeta]:
     page_size = getattr(args, "page_size", None)
     effective_page_size = DEFAULT_PAGE_SIZE if page_size is None else int(page_size)
-    diff_hunk_lines = _resolve_diff_hunk_lines(args=args, default=DEFAULT_DIFF_HUNK_LINES)
     meta = _resolve_pr_meta(client=client, args=args)
     context, _, _ = pager.build_initial(
         meta=meta,
         page_size=effective_page_size,
+        timeline_window=_resolve_timeline_window(args),
+        show_resolved_details=show_resolved_details,
+        show_outdated_details=show_outdated_details,
+        show_minimized_details=show_minimized_details,
+        show_details_blocks=show_details_blocks,
         diff_hunk_lines=diff_hunk_lines,
     )
     return context, meta
+
+
+def _resolve_timeline_window(args: Any):
+    return parse_timeline_window(after=getattr(args, "after", None), before=getattr(args, "before", None))
+
+
+def _resolve_timeline_page_for_index(*, context: TimelineContext, index: int) -> int | None:
+    if context.timeline_filtered:
+        for page_number, page in context.filtered_pages.items():
+            if index in page.absolute_indexes:
+                return page_number
+        return None
+    if index < 1 or index > context.total_count:
+        return None
+    return ((index - 1) // context.page_size) + 1
 
 
 def _resolve_diff_hunk_lines(*, args: Any, default: int) -> int | None:
