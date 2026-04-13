@@ -560,11 +560,6 @@ def test_view_and_expand_use_real_cursor_pagination(
     assert "passed checks hidden." in out
     assert "gh pr comment 77928 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
     assert "gh pr comment 77928 --repo PaddlePaddle/Paddle --body-file <path-or->" not in out
-    assert "⌨ comment_body: '<comment_body>'" not in out
-    assert "⌨ comment_body_file: '<path-or->'" not in out
-    assert "⌨ labels_csv: '<label1>,<label2>'" not in out
-    assert "⌨ reviewers_csv: '<reviewer1>,<reviewer2>'" not in out
-    assert "⌨ assignees_csv: '<assignee1>,<assignee2>'" not in out
     assert "gh pr close 77928 --repo PaddlePaddle/Paddle" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
     assert "gh pr edit 77928 --repo PaddlePaddle/Paddle --remove-label '<label1>,<label2>'" in out
@@ -575,8 +570,6 @@ def test_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
         in out
     )
-    assert "⌨ comment_body: '<comment_body>'" not in out
-    assert "⌨ comment_body_file: '<comment.md>'" not in out
     assert (
         "Multi-line edit via gh-llm: `gh-llm pr comment-edit c3 --body-file <comment.md> --pr 77928 --repo PaddlePaddle/Paddle`"
         not in out
@@ -629,10 +622,7 @@ def test_view_and_expand_use_real_cursor_pagination(
         "Reply via gh-llm: `gh-llm pr thread-reply PRRT_mock_1 --body '<reply>' --pr 77928 --repo PaddlePaddle/Paddle`"
         in out
     )
-    assert "⌨ reply_body: '<reply>'" not in out
-    assert "⌨ reply_body_file: '<reply.md>'" not in out
-    assert "⌨ comment_body: '<comment_body>'" not in out
-    assert "⌨ comment_body_file: '<comment.md>'" not in out
+    assert "⌨ reply_body: '<reply>'" in out
     assert (
         "Multi-line reply via gh-llm: `gh-llm pr thread-reply PRRT_mock_1 --body-file <reply.md> --pr 77928 --repo PaddlePaddle/Paddle`"
         not in out
@@ -1541,10 +1531,6 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
     assert "## Actions" in out
     assert "gh issue comment 77924 --repo PaddlePaddle/Paddle --body '<comment_body>'" in out
     assert "gh issue comment 77924 --repo PaddlePaddle/Paddle --body-file <path-or->" not in out
-    assert "⌨ comment_body: '<comment_body>'" not in out
-    assert "⌨ comment_body_file: '<path-or->'" not in out
-    assert "⌨ labels_csv: '<label1>,<label2>'" not in out
-    assert "⌨ assignees_csv: '<assignee1>,<assignee2>'" not in out
     assert "gh issue close 77924 --repo PaddlePaddle/Paddle" in out
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --add-label '<label1>,<label2>'" in out
     assert "gh issue edit 77924 --repo PaddlePaddle/Paddle --remove-label '<label1>,<label2>'" in out
@@ -1553,8 +1539,6 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`"
         in out
     )
-    assert "⌨ comment_body: '<comment_body>'" not in out
-    assert "⌨ comment_body_file: '<comment.md>'" not in out
     assert (
         "Multi-line edit via gh-llm: `gh-llm issue comment-edit ic2 --body-file <comment.md> --issue 77924 --repo PaddlePaddle/Paddle`"
         not in out
