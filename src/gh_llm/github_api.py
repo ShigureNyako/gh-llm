@@ -3157,6 +3157,7 @@ def _render_review_comment_block(
             f"pr comment-edit {comment_id} --body '<comment_body>' --pr {ref.number} --repo {ref.owner}/{ref.name}"
         )
         lines.append(f"  ◌ comment_id: {comment_id}")
+        lines.append("  ⌨ comment_body: '<comment_body>'")
         lines.append(f"  ⏎ Edit comment via {display_command()}: `{edit_cmd}`")
 
     if not body and not diff_hunk:

@@ -414,6 +414,7 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
                 f"{command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}"
             )
             lines.append(f"   ◌ comment_id: {event.editable_comment_id}")
+            lines.append("   ⌨ comment_body: '<comment_body>'")
             lines.append(f"   ⏎ Edit comment via {display_command()}: `{edit_cmd}`")
     else:
         lines.extend(_indent_block(display_summary))

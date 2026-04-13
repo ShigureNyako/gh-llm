@@ -569,6 +569,7 @@ def test_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm pr comment-edit c3 --body '<comment_body>' --pr 77928 --repo PaddlePaddle/Paddle`"
         in out
     )
+    assert "⌨ comment_body: '<comment_body>'" in out
 
     pre_expand_calls = len(responder.calls)
     code = cli.run(["pr", "timeline-expand", "2", "--pr", "77928", "--repo", "PaddlePaddle/Paddle", "--page-size", "2"])
@@ -617,6 +618,7 @@ def test_view_and_expand_use_real_cursor_pagination(
         "Reply via gh-llm: `gh-llm pr thread-reply PRRT_mock_1 --body '<reply>' --pr 77928 --repo PaddlePaddle/Paddle`"
         in out
     )
+    assert "⌨ comment_body: '<comment_body>'" in out
     assert "⌨ reply_body: '<reply>'" in out
     assert "Unresolve via gh-llm:" in out
 
@@ -1525,6 +1527,7 @@ def test_issue_view_and_expand_use_real_cursor_pagination(
         "Edit comment via gh-llm: `gh-llm issue comment-edit ic2 --body '<comment_body>' --issue 77924 --repo PaddlePaddle/Paddle`"
         in out
     )
+    assert "⌨ comment_body: '<comment_body>'" in out
     assert "cross-reference by @alice (Alice)" in out
     assert "gh-llm pr view 77900 --repo PaddlePaddle/Paddle" in out
     assert "issue/closed by @ShigureNyako" in out
