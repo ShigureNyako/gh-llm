@@ -159,17 +159,11 @@ def render_pr_actions(context: TimelineContext, *, include_diff: bool = True, in
 
         lines.extend(
             [
-                "⌨ comment_body: '<comment_body>'",
                 f"⏎ Comment via gh: `gh pr comment {context.number} --repo {repo} --body '<comment_body>'`",
-                "⌨ comment_body_file: '<path-or->'",
-                f"⏎ Multi-line comment via gh: `gh pr comment {context.number} --repo {repo} --body-file <path-or->`",
                 *close_or_reopen_lines,
-                "⌨ labels_csv: '<label1>,<label2>'",
                 f"⏎ Add labels via gh: `gh pr edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
                 f"⏎ Remove labels via gh: `gh pr edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
-                "⌨ reviewers_csv: '<reviewer1>,<reviewer2>'",
                 f"⏎ Request review via gh: `gh pr edit {context.number} --repo {repo} --add-reviewer '<reviewer1>,<reviewer2>'`",
-                "⌨ assignees_csv: '<assignee1>,<assignee2>'",
                 f"⏎ Assign via gh: `gh pr edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
                 *branch_lines,
             ]
@@ -186,15 +180,10 @@ def render_issue_actions(context: TimelineContext) -> list[str]:
         close_or_reopen_lines.append(f"⏎ Reopen issue via gh: `gh issue reopen {context.number} --repo {repo}`")
     return [
         "## Actions",
-        "⌨ comment_body: '<comment_body>'",
         f"⏎ Comment via gh: `gh issue comment {context.number} --repo {repo} --body '<comment_body>'`",
-        "⌨ comment_body_file: '<path-or->'",
-        f"⏎ Multi-line comment via gh: `gh issue comment {context.number} --repo {repo} --body-file <path-or->`",
         *close_or_reopen_lines,
-        "⌨ labels_csv: '<label1>,<label2>'",
         f"⏎ Add labels via gh: `gh issue edit {context.number} --repo {repo} --add-label '<label1>,<label2>'`",
         f"⏎ Remove labels via gh: `gh issue edit {context.number} --repo {repo} --remove-label '<label1>,<label2>'`",
-        "⌨ assignees_csv: '<assignee1>,<assignee2>'",
         f"⏎ Assign via gh: `gh issue edit {context.number} --repo {repo} --add-assignee '<assignee1>,<assignee2>'`",
     ]
 
@@ -424,14 +413,8 @@ def _render_item(index: int, event: TimelineEvent, context: TimelineContext, com
             edit_cmd = display_command_with(
                 f"{command_group} comment-edit {event.editable_comment_id} --body '<comment_body>' --{selector_name} {context.number} --repo {context.owner}/{context.name}"
             )
-            edit_file_cmd = display_command_with(
-                f"{command_group} comment-edit {event.editable_comment_id} --body-file <comment.md> --{selector_name} {context.number} --repo {context.owner}/{context.name}"
-            )
             lines.append(f"   ◌ comment_id: {event.editable_comment_id}")
-            lines.append("   ⌨ comment_body: '<comment_body>'")
-            lines.append("   ⌨ comment_body_file: '<comment.md>'")
             lines.append(f"   ⏎ Edit comment via {display_command()}: `{edit_cmd}`")
-            lines.append(f"   ⏎ Multi-line edit via {display_command()}: `{edit_file_cmd}`")
     else:
         lines.extend(_indent_block(display_summary))
     if event.resolved_hidden_count > 0:
